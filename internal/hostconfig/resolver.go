@@ -1,7 +1,6 @@
 package hostconfig
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,24 +60,33 @@ func ResolveAllConfigsReport(home string, exists func(string) bool) ConfigReport
 				report.Refused = appendUnique(report.Refused, hostPath+" (resolves outside home)")
 				continue
 			}
-			if err := validateConfigTree(resolvedHost); err != nil {
-				report.Refused = appendUnique(report.Refused, hostPath+" ("+err.Error()+")")
-				continue
+			mounts, refused := collectSafeMounts(resolvedHost)
+			for _, reason := range refused {
+				report.Refused = appendUnique(report.Refused, reason)
 			}
-
-			key := hostPath + "\x00" + filepath.Clean(path.ContainerPath)
-			if _, ok := seen[key]; ok {
-				continue
+			for _, mountPath := range mounts {
+				relative, err := filepath.Rel(resolvedHost, mountPath)
+				if err != nil {
+					report.Refused = appendUnique(report.Refused, hostPath+" (cannot map safe config path)")
+					continue
+				}
+				destPath := filepath.Clean(path.ContainerPath)
+				if relative != "." {
+					destPath = filepath.Join(destPath, relative)
+				}
+				key := mountPath + "\x00" + destPath
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				report.Mounts = append(report.Mounts, ResolvedMount{
+					Agent:    entry.Name,
+					Name:     filepath.Clean(path.HostPath),
+					HostPath: mountPath,
+					DestPath: filepath.ToSlash(filepath.Join("/home/caged", destPath)),
+					Writable: path.Writable,
+				})
 			}
-			seen[key] = struct{}{}
-
-			report.Mounts = append(report.Mounts, ResolvedMount{
-				Agent:    entry.Name,
-				Name:     filepath.Clean(path.HostPath),
-				HostPath: resolvedHost,
-				DestPath: filepath.ToSlash(filepath.Join("/home/caged", filepath.Clean(path.ContainerPath))),
-				Writable: path.Writable,
-			})
 		}
 	}
 	// Git identity is shared across agents rather than duplicated in each entry.
@@ -86,12 +94,10 @@ func ResolveAllConfigsReport(home string, exists func(string) bool) ConfigReport
 	if exists(sharedGitConfig) {
 		resolved, resolveErr := filepath.EvalSymlinks(sharedGitConfig)
 		if resolveErr == nil && IsWithinHome(resolved, resolvedHome) {
-			if validateErr := validateConfigTree(resolved); validateErr == nil {
-				if info, statErr := os.Stat(resolved); statErr == nil && info.Mode().IsRegular() {
-					report.Mounts = append(report.Mounts, ResolvedMount{Agent: "shared", Name: ".gitconfig", HostPath: resolved, DestPath: "/home/caged/.gitconfig", Writable: false})
-				} else {
-					report.Refused = appendUnique(report.Refused, sharedGitConfig+" (shared git config must be a regular file)")
-				}
+			if info, statErr := os.Stat(resolved); statErr == nil && info.Mode().IsRegular() {
+				report.Mounts = append(report.Mounts, ResolvedMount{Agent: "shared", Name: ".gitconfig", HostPath: resolved, DestPath: "/home/caged/.gitconfig", Writable: false})
+			} else {
+				report.Refused = appendUnique(report.Refused, sharedGitConfig+" (shared git config must be a regular file)")
 			}
 		} else {
 			report.Refused = appendUnique(report.Refused, sharedGitConfig+" (resolves outside home or cannot be resolved)")
@@ -102,53 +108,77 @@ func ResolveAllConfigsReport(home string, exists func(string) bool) ConfigReport
 	return report
 }
 
-func validateConfigTree(root string) error {
+func collectSafeMounts(root string) ([]string, []string) {
+	var mounts, refused []string
+	var collect func(string)
+	collect = func(path string) {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			info, statErr := os.Lstat(path)
+			if statErr == nil && info.Mode().IsRegular() {
+				mounts = append(mounts, path)
+			} else {
+				refused = append(refused, path+" (cannot inspect config entry safely)")
+			}
+			return
+		}
+		if subtreeIsSafe(path) {
+			mounts = append(mounts, path)
+			return
+		}
+		for _, entry := range entries {
+			child := filepath.Join(path, entry.Name())
+			info, err := os.Lstat(child)
+			if err != nil {
+				refused = append(refused, child+" (cannot inspect config entry safely)")
+				continue
+			}
+			if info.IsDir() {
+				collect(child)
+			} else if info.Mode().IsRegular() {
+				mounts = append(mounts, child)
+			} else {
+				refused = append(refused, child+" (symlinks and special files are excluded from config mounts)")
+			}
+		}
+	}
 	info, err := os.Lstat(root)
 	if err != nil {
-		return err
+		return nil, []string{root + " (cannot inspect config root safely)"}
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		resolved, err := filepath.EvalSymlinks(root)
-		if err != nil || filepath.Clean(resolved) != filepath.Clean(root) {
-			return fmt.Errorf("config root symlink cannot be resolved safely")
-		}
-		info, err = os.Stat(resolved)
-		if err != nil {
-			return err
-		}
+	if info.Mode().IsRegular() {
+		return []string{root}, nil
 	}
 	if !info.IsDir() {
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("special files are not mounted")
-		}
-		return nil
+		return nil, []string{root + " (config root is not a regular file or directory)"}
 	}
-	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == root {
-			return nil
-		}
+	collect(root)
+	return mounts, refused
+}
+
+func subtreeIsSafe(root string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		path := filepath.Join(root, entry.Name())
 		info, err := os.Lstat(path)
 		if err != nil {
-			return err
+			return false
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			resolved, err := filepath.EvalSymlinks(path)
-			if err != nil || !IsWithinHome(resolved, root) {
-				return fmt.Errorf("symlink %q resolves outside the config directory or cannot be resolved", path)
-			}
-			info, err = os.Stat(resolved)
-			if err != nil {
-				return err
-			}
+			return false
 		}
-		if !info.IsDir() && !info.Mode().IsRegular() {
-			return fmt.Errorf("special file %q is not mounted", path)
+		if info.IsDir() {
+			if !subtreeIsSafe(path) {
+				return false
+			}
+		} else if !info.Mode().IsRegular() {
+			return false
 		}
-		return nil
-	})
+	}
+	return true
 }
 
 func appendUnique(values []string, value string) []string {

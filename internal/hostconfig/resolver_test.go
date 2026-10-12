@@ -163,6 +163,48 @@ func TestSpecialFileInsideConfigTreeIsRefused(t *testing.T) {
 	}
 }
 
+func TestSafeCodexFilesRemainMountedWhenRuntimeEntriesAreExcluded(t *testing.T) {
+	home := t.TempDir()
+	codexHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(filepath.Join(codexHome, "app-server-control"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, contents := range map[string]string{
+		"auth.json":   "credentials",
+		"config.toml": "model = 'test'",
+	} {
+		if err := os.WriteFile(filepath.Join(codexHome, name), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := syscall.Mkfifo(filepath.Join(codexHome, "app-server-control", "daemon.sock"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("COPILOT_HOME", "")
+	report := ResolveAllConfigsReport(home, nil)
+	got := map[string]bool{}
+	for _, mount := range report.Mounts {
+		if mount.Agent == "codex" {
+			got[filepath.Clean(mount.DestPath)] = true
+		}
+	}
+	for _, destination := range []string{"/home/caged/.codex/auth.json", "/home/caged/.codex/config.toml"} {
+		if !got[destination] {
+			t.Errorf("safe Codex file %s was not mounted: %+v", destination, report.Mounts)
+		}
+	}
+	for _, mount := range report.Mounts {
+		if strings.Contains(mount.HostPath, "daemon.sock") {
+			t.Fatalf("runtime socket was mounted: %+v", mount)
+		}
+	}
+	if len(report.Refused) == 0 {
+		t.Fatal("excluded runtime socket was not reported")
+	}
+}
+
 func TestSharedGitConfigMustBeRegularFile(t *testing.T) {
 	home := t.TempDir()
 	if err := os.Mkdir(filepath.Join(home, ".gitconfig"), 0o700); err != nil {
