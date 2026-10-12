@@ -1,6 +1,9 @@
 package container
 
 import (
+	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -91,11 +94,10 @@ func TestBuildArgs(t *testing.T) {
 				EnvVars:       []string{"ANTHROPIC_API_KEY", "GEMINI_API_KEY"},
 				ReturnToShell: true,
 				ConfigMounts: []config.ResolvedMount{{
-					Agent:      "claude",
-					Name:       ".claude",
-					HostPath:   "/home/test/.claude",
-					StagedPath: "/mnt/caged-host/claude/.claude",
-					DestPath:   "/home/caged/.claude",
+					Agent:    "claude",
+					Name:     ".claude",
+					HostPath: "/home/test/.claude",
+					DestPath: "/home/caged/.claude",
 				}},
 			},
 			goos: "linux",
@@ -103,9 +105,8 @@ func TestBuildArgs(t *testing.T) {
 			gid:  3002,
 			want: []string{
 				"run", "-it", "--rm",
-				"-v", "/home/test/.claude:/mnt/caged-host/claude/.claude:ro",
+				"-v", "/home/test/.claude:/home/caged/.claude:ro",
 				"--user", "3001:3002",
-				"-e", `CAGED_CONFIG_MAP=[{"agent":"claude","name":".claude","host":"/home/test/.claude","staged":"/mnt/caged-host/claude/.claude","dest":"/home/caged/.claude","excludes":null}]`,
 				"-e", "ANTHROPIC_API_KEY",
 				"-e", "GEMINI_API_KEY",
 				"-e", "CAGED_RETURN_TO_SHELL=1",
@@ -118,12 +119,11 @@ func TestBuildArgs(t *testing.T) {
 			options: Options{
 				Image: config.RuntimeImage,
 				ConfigMounts: []config.ResolvedMount{{
-					Agent:      "pi",
-					Name:       ".pi",
-					HostPath:   "/home/test/.pi",
-					StagedPath: "/mnt/caged-host/pi/.pi",
-					DestPath:   "/home/caged/.pi",
-					Writable:   true,
+					Agent:    "pi",
+					Name:     ".pi",
+					HostPath: "/home/test/.pi",
+					DestPath: "/home/caged/.pi",
+					Writable: true,
 				}},
 			},
 			goos: "darwin",
@@ -137,23 +137,43 @@ func TestBuildArgs(t *testing.T) {
 			},
 		},
 		{
+			name: "read-only config staging maps host user on macOS",
+			options: Options{
+				Image: config.RuntimeImage,
+				ConfigMounts: []config.ResolvedMount{{
+					HostPath: "/tmp/caged-config",
+					DestPath: "/home/caged/.codex",
+				}},
+			},
+			goos: "darwin",
+			uid:  501,
+			gid:  20,
+			want: []string{
+				"run", "-it", "--rm",
+				"-v", "/tmp/caged-config:/home/caged/.codex:ro",
+				"--user", "501:20",
+				config.RuntimeImage,
+			},
+		},
+		{
 			name: "Pi config falls back to staging when write-through is disabled",
 			options: Options{
 				Image: config.RuntimeImage,
 				ConfigMounts: []config.ResolvedMount{{
-					Agent:      "pi",
-					Name:       ".pi",
-					HostPath:   "/home/test/.pi",
-					StagedPath: "/mnt/caged-host/pi/.pi",
-					DestPath:   "/home/caged/.pi",
-					Excludes:   []string{"auth.json"},
+					Agent:    "pi",
+					Name:     ".pi",
+					HostPath: "/home/test/.pi",
+					DestPath: "/home/caged/.pi",
+					Excludes: []string{"auth.json"},
 				}},
 			},
 			goos: "darwin",
+			uid:  501,
+			gid:  20,
 			want: []string{
 				"run", "-it", "--rm",
-				"-v", "/home/test/.pi:/mnt/caged-host/pi/.pi:ro",
-				"-e", `CAGED_CONFIG_MAP=[{"agent":"pi","name":".pi","host":"/home/test/.pi","staged":"/mnt/caged-host/pi/.pi","dest":"/home/caged/.pi","excludes":["auth.json"]}]`,
+				"-v", "/home/test/.pi:/home/caged/.pi:ro",
+				"--user", "501:20",
 				config.RuntimeImage,
 			},
 		},
@@ -162,13 +182,57 @@ func TestBuildArgs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := buildArgs(tt.options, tt.goos, tt.uid, tt.gid)
-			if err != nil {
-				t.Fatalf("buildArgs() error = %v", err)
-			}
+			got := buildArgs(tt.options, tt.goos, tt.uid, tt.gid)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("buildArgs() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStageConfigsCopiesFilesAndSkipsSpecialAndExcludedFiles(t *testing.T) {
+	t.Parallel()
+
+	source, err := os.MkdirTemp("/tmp", "caged-config-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(source)
+	if err := os.WriteFile(filepath.Join(source, "config.toml"), []byte("config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "auth.json"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("config.toml", filepath.Join(source, "config-link")); err != nil {
+		t.Fatal(err)
+	}
+	socket, err := net.Listen("unix", filepath.Join(source, "ipc.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+
+	mounts, cleanup, err := stageConfigs([]config.ResolvedMount{{
+		HostPath: source,
+		DestPath: "/home/caged/.codex",
+		Excludes: []string{"auth.json"},
+	}})
+	if err != nil {
+		t.Fatalf("stageConfigs() error = %v", err)
+	}
+	defer cleanup()
+
+	staged := mounts[0].HostPath
+	if got, err := os.ReadFile(filepath.Join(staged, "config.toml")); err != nil || string(got) != "config" {
+		t.Fatalf("staged config = %q, error = %v", got, err)
+	}
+	for _, name := range []string{"auth.json", "ipc.sock"} {
+		if _, err := os.Lstat(filepath.Join(staged, name)); !os.IsNotExist(err) {
+			t.Errorf("%s was copied into staging: error = %v", name, err)
+		}
+	}
+	if got, err := os.Readlink(filepath.Join(staged, "config-link")); err != nil || got != "config.toml" {
+		t.Errorf("staged symlink = %q, error = %v", got, err)
 	}
 }

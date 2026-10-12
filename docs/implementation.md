@@ -45,12 +45,12 @@ caged
 The runtime mounts Pi's existing `~/.pi` and `~/.config/pi` directories
 read-write at `/home/caged/.pi` and `/home/caged/.config/pi`. Pi config and
 credential edits therefore update the host immediately. Existing allowlisted
-config for the other supported agents is mounted read-only under
-`/mnt/caged-host/...` and copied into `/home/caged/...` at startup. Those copies
-are temporary. Paths that are missing locally are skipped, and paths that
-resolve outside the user's home directory are rejected. The CLI uses one
-resolution result for Docker mounts and `--verbose` reporting. Staging copies
-regular files and symlinks while skipping sockets and other special files.
+config for the other supported agents is copied to a temporary host directory
+and mounted read-only into the container. Those copies are temporary. Paths
+that are missing locally are skipped, and paths that resolve outside the
+user's home directory are rejected. The CLI uses one resolution result for
+Docker mounts and `--verbose` reporting. Staging copies regular files and
+symlinks while skipping sockets and other special files.
 Host-installed CLI executables are not copied; the runtime image provides the
 commands.
 

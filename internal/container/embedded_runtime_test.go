@@ -49,15 +49,15 @@ func TestRuntimeAgentHomeDirectoriesAreWritableByMappedUsers(t *testing.T) {
 	}
 }
 
-func TestEmbeddedEntrypointCopiesConfigAndReturnsToShell(t *testing.T) {
+func TestEmbeddedEntrypointRunsAgentAndReturnsToShell(t *testing.T) {
 	t.Parallel()
 
 	entrypoint := string(runtimeEntrypoint)
-	if !strings.Contains(entrypoint, "copy_host_config") {
-		t.Error("embedded entrypoint does not copy staged configs")
+	if strings.Contains(entrypoint, "python3") || strings.Contains(entrypoint, "CAGED_CONFIG_MAP") {
+		t.Error("embedded entrypoint still contains config-copy logic")
 	}
-	if !strings.Contains(entrypoint, "os.path.isfile(src) or os.path.islink(src)") {
-		t.Error("embedded entrypoint does not skip sockets and other special config files")
+	if !strings.Contains(entrypoint, `exec "$@"`) {
+		t.Error("embedded entrypoint does not directly run the requested command")
 	}
 	if !strings.Contains(entrypoint, `CAGED_RETURN_TO_SHELL`) || !strings.Contains(entrypoint, "bash -i") {
 		t.Error("embedded entrypoint does not open an interactive shell after agent exit")

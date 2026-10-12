@@ -12,10 +12,10 @@ Host caged CLI
   └── runs docker run --rm
         ├── project directory -> /workspace (unless --no-mount)
         ├── Pi config directories <-> host (read-write)
-        ├── other allowlisted configs -> read-only staging paths
+        ├── other allowlisted configs -> temporary copies mounted read-only
         │     (unless --no-config)
         ├── selected host environment variables (by name)
-        └── embedded runtime entrypoint -> copies config -> runs shell/agent
+        └── embedded runtime entrypoint -> runs shell/agent
                                                   └── agent exits -> interactive Bash
 ```
 
@@ -56,9 +56,9 @@ Config resolution produces one report of valid mounts, missing paths, excluded
 credentials, and refused symlinks. The CLI uses that same report for Docker
 arguments and verbose output.
 Existing allowlisted config is passed through by default. Pi's two config roots
-are direct read-write mounts; other agents' config is copied into the container
-from read-only staging mounts. `--no-auth` disables Pi write-through and
-excludes allowlisted credentials from staged configs.
+are direct read-write mounts; other agents' config is copied to a temporary
+host directory and mounted read-only. `--no-auth` disables Pi write-through and
+excludes allowlisted credentials from those copies.
 Host CLI executables are not transferred; the single runtime image provides
 the agent commands. During config staging, regular files and symlinks are
 copied, while sockets and other special files are skipped.
@@ -92,8 +92,8 @@ the Dockerfile and
 into the Go binary with `go:embed`. Image builds write those embedded files to
 a temporary build directory and invoke Docker, so a built caged executable
 doesn't need the repository checkout at runtime. Both the shell and all agent
-launches use the same `caged-runtime:latest` image. The entrypoint consumes the
-mount map and copies eligible config files into the container home.
+launches use the same `caged-runtime:latest` image. The entrypoint only launches
+the requested command and returns to Bash after an agent exits.
 
 If the image is absent when caged starts, it attempts to build it. Running
 `caged build` explicitly rebuilds it.
@@ -108,16 +108,15 @@ If the image is absent when caged starts, it attempts to build it. Running
    default unless `--allow-broad-mount` is provided.
 3. Caged checks each explicitly allowlisted host path and skips paths that do
    not exist. Pi's `~/.pi` and `~/.config/pi` paths are mounted read-write at
-   their destinations. Other existing paths are mounted read-only under
-   `/mnt/caged-host/<agent>/...`; Caged sends those staged paths and
-   destinations to the entrypoint for copy-in. This includes configs for all
-   supported agents, not only the one named on the command line.
+   their destinations. Other existing paths are copied into a temporary
+   directory on the host and mounted read-only at their destinations. Special
+   files such as Codex's live IPC socket are skipped. Configs for all supported
+   agents are included, not only the selected agent.
 4. On Linux, Docker receives `--user <host-uid>:<host-gid>` so files written in
    `/workspace` and Pi's config directories have the host user's ownership. On
-   macOS, host UID/GID mapping is enabled when Pi config is mounted read-write.
-   On Windows, that flag is omitted.
-5. The entrypoint copies staged configs into `/home/caged`, applying excludes
-   requested by `--no-auth`, then starts the requested shell or agent process.
+   macOS, host UID/GID mapping is enabled whenever host config directories are
+   mounted. On Windows, that flag is omitted.
+5. The entrypoint starts the requested shell or agent process.
 6. The default launch is an interactive shell, with all agent commands
    available in it. For `caged <agent>`, when the agent exits, the entrypoint
    opens an interactive Bash shell in that same container. Exiting Bash ends it.
@@ -132,16 +131,16 @@ volumes.
 
 Pi config roots are mounted read-write, so Pi changes—including auth or
 settings changes—are immediately reflected in the host config directories.
-Other agents' configs are mounted read-only at staging paths and copied into
-the container home. Changes made to those copies disappear when the container
-is removed.
+Other agents' configs are copied to a temporary host directory and mounted
+read-only into the container. Changes made to those copies disappear when the
+container is removed.
 
-- `--no-config` disables all host config staging.
+- `--no-config` disables all host config mounts and staging.
 - Allowlisted config and credential files are available by default so the
   installed agents can use existing host config.
 - `--no-auth` disables Pi's direct config mounts and excludes credential files
   from staged config copies; `--no-config` disables all host config handling.
-- Other agent configs are inputs copied at startup, not a bidirectional sync
+- Other agent configs are read-only inputs, not a bidirectional sync
   mechanism.
 
 ## Environment variable behavior
@@ -185,4 +184,4 @@ volumes left by an older build are not used by this version.
 - [`internal/container/runtime/Dockerfile`](../internal/container/runtime/Dockerfile):
   runtime image contents
 - [`internal/container/runtime/caged-entrypoint.sh`](../internal/container/runtime/caged-entrypoint.sh):
-  staged config copy-in and process handoff
+  agent launch and return-to-shell behavior

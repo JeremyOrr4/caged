@@ -2,7 +2,6 @@ package container
 
 import (
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -54,35 +53,4 @@ func BuildRuntimeImage(noCache bool) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
-}
-
-type configMountEnv struct {
-	Agent    string   `json:"agent"`
-	Name     string   `json:"name"`
-	Host     string   `json:"host"`
-	Staged   string   `json:"staged"`
-	Dest     string   `json:"dest"`
-	Excludes []string `json:"excludes"`
-}
-
-func configEnvJSON(mounts []config.ResolvedMount) (string, error) {
-	if len(mounts) == 0 {
-		return "", nil
-	}
-	payload := make([]configMountEnv, 0, len(mounts))
-	for _, mount := range mounts {
-		payload = append(payload, configMountEnv{
-			Agent:    mount.Agent,
-			Name:     mount.Name,
-			Host:     mount.HostPath,
-			Staged:   mount.StagedPath,
-			Dest:     mount.DestPath,
-			Excludes: mount.Excludes,
-		})
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("marshal config mount map: %w", err)
-	}
-	return string(data), nil
 }

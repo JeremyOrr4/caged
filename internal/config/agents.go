@@ -12,19 +12,17 @@ import (
 type ConfigPath struct {
 	HostPath      string
 	ContainerPath string
-	Excludes      []string
 	AuthExcludes  []string
 	IsAuth        bool
 }
 
 type ResolvedMount struct {
-	Agent      string
-	Name       string
-	HostPath   string
-	StagedPath string
-	DestPath   string
-	Excludes   []string
-	Writable   bool
+	Agent    string
+	Name     string
+	HostPath string
+	DestPath string
+	Excludes []string
+	Writable bool
 }
 
 type ConfigReport struct {
@@ -199,7 +197,7 @@ func ResolveAllConfigsReport(home string, exists func(string) bool, excludeAuth 
 			}
 			seen[key] = struct{}{}
 
-			excludes := append([]string(nil), path.Excludes...)
+			var excludes []string
 			if excludeAuth {
 				excludes = append(excludes, path.AuthExcludes...)
 				for _, pattern := range path.AuthExcludes {
@@ -207,13 +205,12 @@ func ResolveAllConfigsReport(home string, exists func(string) bool, excludeAuth 
 				}
 			}
 			report.Mounts = append(report.Mounts, ResolvedMount{
-				Agent:      agent.Name,
-				Name:       filepath.Clean(path.HostPath),
-				HostPath:   hostPath,
-				StagedPath: filepath.ToSlash(filepath.Join("/mnt/caged-host", agent.Name, filepath.Clean(path.HostPath))),
-				DestPath:   filepath.ToSlash(filepath.Join("/home/caged", filepath.Clean(path.ContainerPath))),
-				Excludes:   excludes,
-				Writable:   agent.Name == "pi" && !excludeAuth,
+				Agent:    agent.Name,
+				Name:     filepath.Clean(path.HostPath),
+				HostPath: resolvedHost,
+				DestPath: filepath.ToSlash(filepath.Join("/home/caged", filepath.Clean(path.ContainerPath))),
+				Excludes: excludes,
+				Writable: agent.Name == "pi" && !excludeAuth,
 			})
 		}
 	}

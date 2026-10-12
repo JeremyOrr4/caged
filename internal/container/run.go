@@ -1,6 +1,7 @@
 package container
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,16 +27,24 @@ type Mount struct {
 }
 
 // Run starts an interactive, disposable Docker container.
-func Run(options Options) error {
+func Run(options Options) (runErr error) {
 	docker, err := exec.LookPath("docker")
 	if err != nil {
 		return fmt.Errorf("docker not found, is Docker installed and running?: %w", err)
 	}
 
-	args, err := buildArgs(options, runtime.GOOS, os.Getuid(), os.Getgid())
+	configMounts, cleanup, err := stageConfigs(options.ConfigMounts)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err := cleanup(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("remove staged configs: %w", err))
+		}
+	}()
+	options.ConfigMounts = configMounts
+
+	args := buildArgs(options, runtime.GOOS, os.Getuid(), os.Getgid())
 	cmd := exec.Command(docker, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -44,7 +53,7 @@ func Run(options Options) error {
 	return cmd.Run()
 }
 
-func buildArgs(options Options, goos string, uid, gid int) ([]string, error) {
+func buildArgs(options Options, goos string, uid, gid int) []string {
 	args := []string{"run", "-it", "--rm"}
 
 	if options.Mount != nil {
@@ -53,32 +62,16 @@ func buildArgs(options Options, goos string, uid, gid int) ([]string, error) {
 			"-w", options.Mount.ContainerPath,
 		)
 	}
-	hasWritableConfig := false
+	hasConfigMount := len(options.ConfigMounts) > 0
 	for _, mount := range options.ConfigMounts {
-		if mount.Writable {
-			args = append(args, "-v", mount.HostPath+":"+mount.DestPath)
-			hasWritableConfig = true
-			continue
-		}
-		args = append(args,
-			"-v", mount.HostPath+":"+mount.StagedPath+":ro",
-		)
-	}
-	if goos == "linux" || (goos == "darwin" && hasWritableConfig) {
-		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))
-	}
-	stagedMounts := make([]config.ResolvedMount, 0, len(options.ConfigMounts))
-	for _, mount := range options.ConfigMounts {
+		volume := mount.HostPath + ":" + mount.DestPath
 		if !mount.Writable {
-			stagedMounts = append(stagedMounts, mount)
+			volume += ":ro"
 		}
+		args = append(args, "-v", volume)
 	}
-	if len(stagedMounts) > 0 {
-		configMap, err := configEnvJSON(stagedMounts)
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, "-e", "CAGED_CONFIG_MAP="+configMap)
+	if goos == "linux" || (goos == "darwin" && hasConfigMount) {
+		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))
 	}
 	for _, env := range options.EnvVars {
 		args = append(args, "-e", env)
@@ -88,5 +81,5 @@ func buildArgs(options Options, goos string, uid, gid int) ([]string, error) {
 	}
 
 	args = append(args, options.Image)
-	return append(args, options.Command...), nil
+	return append(args, options.Command...)
 }

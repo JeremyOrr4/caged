@@ -77,12 +77,12 @@ is intentional, explicitly acknowledge it with `--allow-broad-mount`.
 Pi's existing `~/.pi` and `~/.config/pi` directories are mounted read-write at
 their matching paths in the container. Pi config and login changes therefore
 persist on the host immediately. Other supported agents' allowlisted config is
-staged read-only and copied into the container; changes to those configs are
-discarded when it exits. Local CLI executables are not copied into the
-container; the runtime image supplies the agent commands. Config staging skips
-sockets and other special files. `--no-auth` keeps allowlisted credential files
-out of the container; `--no-config` disables all host config mounts. Caged does
-not create or mount named Docker volumes.
+copied to a temporary host directory and mounted read-only into the container;
+changes to those configs are discarded when it exits. Sockets and other
+special files are skipped. Local CLI executables are not copied into the
+container; the runtime image supplies the agent commands. `--no-auth` keeps
+allowlisted credential files out of the container; `--no-config` disables all
+host config mounts. Caged does not create or mount named Docker volumes.
 
 By default, Pi has direct access to its local config and credentials through
 the read-write mounts. Use `--no-auth` to avoid mounting Pi config write-through
