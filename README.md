@@ -1,28 +1,62 @@
 # caged
 
-`caged` runs AI coding CLIs in Docker containers. This step opens a disposable
-Ubuntu shell with your current working directory mounted at `/workspace`.
+`caged` runs AI coding CLIs in disposable Docker containers. It supports a
+plain shell, agent launches, config staging from the host, and persistent agent
+state volumes.
 
 ## Usage
 
-`caged` opens an interactive Ubuntu container shell. The directory where you
-run the command is available in the container at `/workspace`, and the shell
-starts there. Leave the shell with `exit` or Ctrl-D; the container is removed
-automatically.
+`caged` opens an interactive Ubuntu shell with the current working directory
+mounted at `/workspace` and starts there.
 
 ```sh
 make build
 ./bin/caged
 ```
 
-Use `--no-mount` for the previous blank-container behavior:
+Launch a supported agent:
+
+```sh
+./bin/caged claude
+./bin/caged pi
+./bin/caged codex
+./bin/caged gemini
+```
+
+Use `--no-mount` for a blank container with no project directory bind mount:
 
 ```sh
 ./bin/caged --no-mount
+./bin/caged claude --no-mount
+```
+
+Pass environment variables by name only:
+
+```sh
+./bin/caged claude --env ANTHROPIC_API_KEY
+./bin/caged --env OPENAI_API_KEY claude
+```
+
+Skip persistent state for a single run:
+
+```sh
+./bin/caged claude --no-persist
+```
+
+Reset a persisted agent volume:
+
+```sh
+./bin/caged reset claude --yes
+./bin/caged reset --all --yes
 ```
 
 For safety, caged refuses to mount `/` or your entire home directory. If that
 is intentional, explicitly acknowledge it with `--allow-broad-mount`.
+
+Host config files are staged read-only into the container and copied into the
+agent's own home directory before startup. Credential files are omitted unless
+`--with-auth` is passed. The copied files never overwrite the host. The runtime
+keeps agent state in a named Docker volume (`caged-<agent>-home`) by default.
 
 Install it to your Go binary directory to run it from anywhere:
 
