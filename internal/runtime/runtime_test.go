@@ -1,4 +1,4 @@
-package container
+package runtime
 
 import (
 	"strings"
@@ -19,7 +19,7 @@ func TestEmbeddedDockerfileIsPresent(t *testing.T) {
 func TestRuntimeAgentHomeDirectoriesAreWritableByMappedUsers(t *testing.T) {
 	t.Parallel()
 
-	dockerfile := string(runtimeDockerfile)
+	dockerfile := strings.ReplaceAll(string(runtimeDockerfile), "\\\n", " ")
 	homePaths := []string{
 		"/home/caged/.config/pi",
 		"/home/caged/.pi",
@@ -32,15 +32,14 @@ func TestRuntimeAgentHomeDirectoriesAreWritableByMappedUsers(t *testing.T) {
 			t.Errorf("runtime Dockerfile does not create agent home path %q", homePath)
 		}
 	}
-	chmodLine := ""
-	for _, line := range strings.Split(dockerfile, "\n") {
-		if strings.Contains(line, "chmod 0777 /home/caged/.config") {
-			chmodLine = line
-			break
-		}
-	}
-	if chmodLine == "" {
+	chmodStart := strings.Index(dockerfile, "chmod 0777 /home/caged")
+	if chmodStart == -1 {
 		t.Fatal("runtime Dockerfile does not make agent home paths writable by mapped users")
+	}
+	chmodEnd := strings.Index(dockerfile[chmodStart:], "&& git config")
+	chmodLine := dockerfile[chmodStart:]
+	if chmodEnd >= 0 {
+		chmodLine = chmodLine[:chmodEnd]
 	}
 	for _, homePath := range homePaths {
 		if !strings.Contains(chmodLine, homePath) {
@@ -77,6 +76,14 @@ func TestRuntimeImageLeavesClaudeConfigDestinationWritable(t *testing.T) {
 
 	if !strings.Contains(string(runtimeDockerfile), "rm -f /home/caged/.claude.json") {
 		t.Fatal("runtime image does not remove the installer-created Claude config file")
+	}
+}
+
+func TestClaudeUsesDirectoryConfigMount(t *testing.T) {
+	t.Parallel()
+
+	if !strings.Contains(string(runtimeDockerfile), "CLAUDE_CONFIG_DIR=/home/caged/.claude") {
+		t.Fatal("runtime image does not keep Claude config writes inside the mounted directory")
 	}
 }
 

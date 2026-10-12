@@ -1,13 +1,11 @@
-package container
+package docker
 
 import (
-	"net"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 
-	"github.com/JeremyOrr4/caged/internal/config"
+	"github.com/JeremyOrr4/caged/internal/plan"
+	"github.com/JeremyOrr4/caged/internal/runtime"
 )
 
 func TestBuildArgs(t *testing.T) {
@@ -68,7 +66,7 @@ func TestBuildArgs(t *testing.T) {
 		{
 			name: "agent command in runtime image",
 			options: Options{
-				Image:         config.RuntimeImage,
+				Image:         runtime.Image,
 				Command:       []string{"claude"},
 				Mount:         &Mount{HostPath: "/project", ContainerPath: "/workspace"},
 				ReturnToShell: true,
@@ -82,22 +80,23 @@ func TestBuildArgs(t *testing.T) {
 				"-w", "/workspace",
 				"--user", "2001:2002",
 				"-e", "CAGED_RETURN_TO_SHELL=1",
-				config.RuntimeImage,
+				runtime.Image,
 				"claude",
 			},
 		},
 		{
-			name: "config read-only mount and env names",
+			name: "config read-write mount and env names",
 			options: Options{
-				Image:         config.RuntimeImage,
+				Image:         runtime.Image,
 				Command:       []string{"claude"},
 				EnvVars:       []string{"ANTHROPIC_API_KEY", "GEMINI_API_KEY"},
 				ReturnToShell: true,
-				ConfigMounts: []config.ResolvedMount{{
+				ConfigMounts: []plan.ConfigMount{{
 					Agent:    "claude",
 					Name:     ".claude",
 					HostPath: "/home/test/.claude",
 					DestPath: "/home/caged/.claude",
+					Writable: true,
 				}},
 			},
 			goos: "linux",
@@ -105,20 +104,20 @@ func TestBuildArgs(t *testing.T) {
 			gid:  3002,
 			want: []string{
 				"run", "-it", "--rm",
-				"-v", "/home/test/.claude:/home/caged/.claude:ro",
+				"-v", "/home/test/.claude:/home/caged/.claude",
 				"--user", "3001:3002",
 				"-e", "ANTHROPIC_API_KEY",
 				"-e", "GEMINI_API_KEY",
 				"-e", "CAGED_RETURN_TO_SHELL=1",
-				config.RuntimeImage,
+				runtime.Image,
 				"claude",
 			},
 		},
 		{
 			name: "Pi config mounts directly read-write",
 			options: Options{
-				Image: config.RuntimeImage,
-				ConfigMounts: []config.ResolvedMount{{
+				Image: runtime.Image,
+				ConfigMounts: []plan.ConfigMount{{
 					Agent:    "pi",
 					Name:     ".pi",
 					HostPath: "/home/test/.pi",
@@ -132,17 +131,17 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"run", "-it", "--rm",
 				"-v", "/home/test/.pi:/home/caged/.pi",
-				"--user", "501:20",
-				config.RuntimeImage,
+				runtime.Image,
 			},
 		},
 		{
-			name: "read-only config staging maps host user on macOS",
+			name: "config mount uses image user on macOS",
 			options: Options{
-				Image: config.RuntimeImage,
-				ConfigMounts: []config.ResolvedMount{{
+				Image: runtime.Image,
+				ConfigMounts: []plan.ConfigMount{{
 					HostPath: "/tmp/caged-config",
 					DestPath: "/home/caged/.codex",
+					Writable: true,
 				}},
 			},
 			goos: "darwin",
@@ -150,21 +149,20 @@ func TestBuildArgs(t *testing.T) {
 			gid:  20,
 			want: []string{
 				"run", "-it", "--rm",
-				"-v", "/tmp/caged-config:/home/caged/.codex:ro",
-				"--user", "501:20",
-				config.RuntimeImage,
+				"-v", "/tmp/caged-config:/home/caged/.codex",
+				runtime.Image,
 			},
 		},
 		{
-			name: "Pi config falls back to staging when write-through is disabled",
+			name: "Pi config is writable",
 			options: Options{
-				Image: config.RuntimeImage,
-				ConfigMounts: []config.ResolvedMount{{
+				Image: runtime.Image,
+				ConfigMounts: []plan.ConfigMount{{
 					Agent:    "pi",
 					Name:     ".pi",
 					HostPath: "/home/test/.pi",
 					DestPath: "/home/caged/.pi",
-					Excludes: []string{"auth.json"},
+					Writable: true,
 				}},
 			},
 			goos: "darwin",
@@ -172,9 +170,8 @@ func TestBuildArgs(t *testing.T) {
 			gid:  20,
 			want: []string{
 				"run", "-it", "--rm",
-				"-v", "/home/test/.pi:/home/caged/.pi:ro",
-				"--user", "501:20",
-				config.RuntimeImage,
+				"-v", "/home/test/.pi:/home/caged/.pi",
+				runtime.Image,
 			},
 		},
 	}
@@ -190,49 +187,29 @@ func TestBuildArgs(t *testing.T) {
 	}
 }
 
-func TestStageConfigsCopiesFilesAndSkipsSpecialAndExcludedFiles(t *testing.T) {
+func TestBuildArgsExposeOnlyPlannedMounts(t *testing.T) {
 	t.Parallel()
 
-	source, err := os.MkdirTemp("/tmp", "caged-config-test-")
-	if err != nil {
-		t.Fatal(err)
+	options := Options{
+		Image: runtime.Image,
+		Mount: &Mount{HostPath: "/projects/current", ContainerPath: "/workspace/current"},
+		ConfigMounts: []plan.ConfigMount{
+			{HostPath: "/home/user/.claude", DestPath: "/home/caged/.claude", Writable: true},
+			{HostPath: "/home/user/.gitconfig", DestPath: "/home/caged/.gitconfig", Writable: false},
+		},
+		Command: []string{"bash"},
 	}
-	defer os.RemoveAll(source)
-	if err := os.WriteFile(filepath.Join(source, "config.toml"), []byte("config"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, "auth.json"), []byte("secret"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("config.toml", filepath.Join(source, "config-link")); err != nil {
-		t.Fatal(err)
-	}
-	socket, err := net.Listen("unix", filepath.Join(source, "ipc.sock"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer socket.Close()
-
-	mounts, cleanup, err := stageConfigs([]config.ResolvedMount{{
-		HostPath: source,
-		DestPath: "/home/caged/.codex",
-		Excludes: []string{"auth.json"},
-	}})
-	if err != nil {
-		t.Fatalf("stageConfigs() error = %v", err)
-	}
-	defer cleanup()
-
-	staged := mounts[0].HostPath
-	if got, err := os.ReadFile(filepath.Join(staged, "config.toml")); err != nil || string(got) != "config" {
-		t.Fatalf("staged config = %q, error = %v", got, err)
-	}
-	for _, name := range []string{"auth.json", "ipc.sock"} {
-		if _, err := os.Lstat(filepath.Join(staged, name)); !os.IsNotExist(err) {
-			t.Errorf("%s was copied into staging: error = %v", name, err)
+	args := buildArgs(options, "darwin", 0, 0)
+	volumeCount := 0
+	for _, arg := range args {
+		if arg == "-v" {
+			volumeCount++
+		}
+		if arg == "--privileged" || arg == "/var/run/docker.sock" {
+			t.Fatalf("unexpected privileged host access in Docker args: %q", arg)
 		}
 	}
-	if got, err := os.Readlink(filepath.Join(staged, "config-link")); err != nil || got != "config.toml" {
-		t.Errorf("staged symlink = %q, error = %v", got, err)
+	if want := 1 + len(options.ConfigMounts); volumeCount != want {
+		t.Fatalf("Docker args contain %d volume mounts, want only the %d planned mounts: %q", volumeCount, want, args)
 	}
 }

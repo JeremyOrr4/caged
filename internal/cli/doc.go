@@ -1,2 +1,2 @@
-// Package cli will contain caged's command-line behavior.
+// Package cli wires Cobra commands and flags to caged's runtime operations.
 package cli

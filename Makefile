@@ -23,7 +23,7 @@ install:
 	go install -ldflags "-X main.version=$(VERSION)" ./cmd/caged
 
 docker-build:
-	docker build -t $(IMAGE_NAME) .
+	docker build -f dev/Dockerfile -t $(IMAGE_NAME) .
 
 docker-shell:
 	docker run --rm -it -v "$(CURDIR):/workspace" -w /workspace $(IMAGE_NAME)

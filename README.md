@@ -1,104 +1,62 @@
 # caged
 
-`caged` runs AI coding CLIs in disposable Docker containers. It supports a
-plain shell, agent launches, and host config integration.
+`caged` runs Claude Code, Codex, Gemini CLI, Pi, or GitHub Copilot CLI in a disposable Docker
+container. It mounts the directory you started in at
+`/workspace/<folder-name>` and uses one image containing every supported CLI.
+Docker Desktop is the supported runtime on macOS; Linux is best effort.
 
 ## Usage
 
-`caged` opens one interactive Ubuntu container with the current working
-directory mounted at `/workspace`, all supported agent CLIs installed, and
-existing allowlisted config for each CLI made available in the container.
-
 ```sh
-go run ./cmd/caged
+caged                         # interactive shell with all CLIs available
+caged claude                  # launch an agent, then return to the container shell
+caged codex 'fix the tests'   # launch with an initial prompt
+caged copilot 'explain this code'  # launch GitHub Copilot CLI with a prompt
+caged build [--no-cache]      # build or refresh the runtime image
+caged list                    # list supported agents
 ```
 
-Start and switch between agents directly in that same container shell:
+The initial prompt is passed as one argument according to each agent's launch
+style. The prompt is not interpreted by a shell. After an agent exits, caged
+opens a shell in the same container; `exit` removes it.
+
+Existing `~/.claude`, `~/.codex`, `~/.gemini`, `~/.pi`,
+`~/.copilot`, and `~/.config/pi` paths are mounted read-write. Changes,
+including credentials created by logging in inside the container, persist on
+the host. The shared `~/.gitconfig` is mounted read-only. On macOS, Claude
+Code's Keychain login is not forwarded; log in once
+inside caged or pass an API key. Credential files in mounted config folders are
+available to the container. SSH keys, cloud credential directories, and the
+Docker socket are never mounted. Use `--no-config` to disable all config mounts.
+The container login credential is stored as a plaintext file in the mounted
+config directory on the host.
+Copilot CLI can authenticate with `copilot login --device-code`; its config
+directory is mounted so the login can persist between caged runs. It can also
+use `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` passed with `--env`.
+Claude Code uses `/home/caged/.claude` as its config directory inside the
+container. This lets its configuration and credentials persist through the
+directory mount; the host's `~/.claude.json` is intentionally not shared.
+
+Environment variables are forwarded by name only, and only when set on the
+host. Use repeatable `--env NAME` for additional names. Values are never shown
+by caged.
 
 ```sh
-claude
-pi
-codex
-gemini
+caged claude --env ANTHROPIC_API_KEY
+caged --workdir ~/code/my-project pi
+caged --no-mount
 ```
 
-The project directory is a bind mount, so edits in `/workspace` are immediately
-visible on the host. On Linux, files created there use your host UID/GID.
-Git is configured to trust `/workspace`.
+For safety, mounting `/` or your entire home directory requires
+`--allow-broad-mount`. Ports are not published, so services inside the
+container are not reachable through the host's `localhost`. macOS bind mounts
+can be slower for large dependency trees.
 
-You can also start an agent immediately:
+Install with `go install github.com/JeremyOrr4/caged/cmd/caged@latest` or build
+from a checkout with `make build`. The runtime image is built locally on first
+launch. `caged build --no-cache` refreshes the installed CLI versions.
 
-```sh
-go run ./cmd/caged claude
-```
-
-When that agent exits, caged leaves you in a shell in the same container, where
-you can launch another CLI. Type `exit` to remove the container.
-
-Codex is wrapped with `--no-daemon`, including when started from the container
-shell.
-
-Build or list the runtime agents from the host:
-
-```sh
-go run ./cmd/caged build
-go run ./cmd/caged list
-```
-
-`caged-runtime:latest` is the one image used for the shell and all four agents.
-If it is missing, `caged` builds it on the first run. `caged build` rebuilds
-that image; `caged build --no-cache` skips Docker's build cache.
-
-Use `--no-mount` for a blank container with no project directory bind mount:
-
-```sh
-go run ./cmd/caged --no-mount
-go run ./cmd/caged claude --no-mount
-```
-
-Pass environment variables by name only:
-
-```sh
-go run ./cmd/caged claude --env ANTHROPIC_API_KEY
-go run ./cmd/caged --env OPENAI_API_KEY claude
-```
-
-Mount a particular host project directory instead of the current one with
-`--workdir` / `-w`:
-
-```sh
-go run ./cmd/caged --workdir ~/code/my-project
-go run ./cmd/caged -w ~/code/my-project pi
-```
-
-For safety, caged refuses to mount `/` or your entire home directory. If that
-is intentional, explicitly acknowledge it with `--allow-broad-mount`.
-
-Pi's existing `~/.pi` and `~/.config/pi` directories are mounted read-write at
-their matching paths in the container. Pi config and login changes therefore
-persist on the host immediately. Other supported agents' allowlisted config is
-copied to a temporary host directory and mounted read-only into the container;
-changes to those configs are discarded when it exits. Sockets and other
-special files are skipped. Local CLI executables are not copied into the
-container; the runtime image supplies the agent commands. `--no-auth` keeps
-allowlisted credential files out of the container; `--no-config` disables all
-host config mounts. Caged does not create or mount named Docker volumes.
-
-By default, Pi has direct access to its local config and credentials through
-the read-write mounts. Use `--no-auth` to avoid mounting Pi config write-through
-and to exclude credential files from the staged configs for other agents.
-
-Use `--verbose` to see which config paths and environment variable names are
-passed, skipped, or excluded. Environment variable values are never printed.
-
-Install it to your Go binary directory to run it from anywhere:
-
-```sh
-make install
-caged
-```
-
-## Build and check locally
+## Development
 
 ```sh
 make build
@@ -106,31 +64,5 @@ make test
 make vet
 ```
 
-## Build the development environment
-
-Start Docker Desktop first, then build the development image and open a shell
-with this repository mounted at `/workspace`:
-
-```sh
-make docker-build
-make docker-shell
-```
-
-Inside the container, build and run caged:
-
-```sh
-go run ./cmd/caged
-```
-
-The repository is mounted at `/workspace`. You can leave the container with
-`exit`.
-
-## Cross-compile in the development environment
-
-From the container shell, write platform-specific binaries into the host's
-`bin/` directory:
-
-```sh
-GOOS=darwin GOARCH=arm64 go build -o caged-darwin-arm64 ./cmd/caged
-GOOS=linux GOARCH=amd64 go build -o caged-linux-amd64 ./cmd/caged
-```
+The development image uses [dev/Dockerfile](dev/Dockerfile); the embedded
+runtime image is defined in `internal/runtime/Dockerfile`.

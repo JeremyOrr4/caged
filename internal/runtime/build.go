@@ -1,4 +1,4 @@
-package container
+package runtime
 
 import (
 	_ "embed"
@@ -6,33 +6,31 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-
-	"github.com/JeremyOrr4/caged/internal/config"
 )
 
-//go:embed runtime/Dockerfile
+//go:embed Dockerfile
 var runtimeDockerfile []byte
 
-//go:embed runtime/caged-entrypoint.sh
+//go:embed caged-entrypoint.sh
 var runtimeEntrypoint []byte
 
-func ImageExists(image string) bool {
-	cmd := exec.Command("docker", "image", "inspect", image)
-	return cmd.Run() == nil
-}
-
-func BuildRuntimeImage(noCache bool) error {
+// BuildRuntimeImage creates the local image from its embedded runtime recipe.
+func BuildRuntimeImage(noCache bool, checkDocker func() error) error {
+	if checkDocker == nil {
+		return fmt.Errorf("Docker availability check is required")
+	}
+	if err := checkDocker(); err != nil {
+		return err
+	}
 	docker, err := exec.LookPath("docker")
 	if err != nil {
-		return fmt.Errorf("docker not found, is Docker installed and running?: %w", err)
+		return fmt.Errorf("Docker is not installed or not on PATH: %w", err)
 	}
-
 	dir, err := os.MkdirTemp("", "caged-runtime-")
 	if err != nil {
-		return fmt.Errorf("create temp build dir: %w", err)
+		return fmt.Errorf("create temporary build directory: %w", err)
 	}
 	defer os.RemoveAll(dir)
-
 	dockerfilePath := filepath.Join(dir, "Dockerfile")
 	if err := os.WriteFile(dockerfilePath, runtimeDockerfile, 0o644); err != nil {
 		return fmt.Errorf("write embedded Dockerfile: %w", err)
@@ -41,16 +39,12 @@ func BuildRuntimeImage(noCache bool) error {
 	if err := os.WriteFile(entrypointPath, runtimeEntrypoint, 0o755); err != nil {
 		return fmt.Errorf("write embedded entrypoint: %w", err)
 	}
-
-	args := []string{"build", "-t", config.RuntimeImage}
+	args := []string{"build", "-t", Image}
 	if noCache {
 		args = append(args, "--no-cache")
 	}
 	args = append(args, "-f", dockerfilePath, dir)
-
 	cmd := exec.Command(docker, args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }

@@ -8,15 +8,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JeremyOrr4/caged/internal/config"
-	"github.com/JeremyOrr4/caged/internal/container"
+	"github.com/JeremyOrr4/caged/internal/agent"
+	"github.com/JeremyOrr4/caged/internal/app"
+	"github.com/JeremyOrr4/caged/internal/docker"
+	"github.com/JeremyOrr4/caged/internal/project"
 )
 
 func TestRootCmdRejectsTooManyArguments(t *testing.T) {
 	t.Parallel()
 
 	cmd := NewRootCmd("test")
-	cmd.SetArgs([]string{"claude", "pi"})
+	cmd.SetArgs([]string{"claude", "prompt one", "extra"})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 
@@ -24,7 +26,7 @@ func TestRootCmdRejectsTooManyArguments(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want an error for too many arguments")
 	}
-	if !strings.Contains(err.Error(), "accepts at most 1 arg") {
+	if !strings.Contains(err.Error(), "accepts at most 2 arg") {
 		t.Errorf("Execute() error = %q, want a too-many-args error", err)
 	}
 }
@@ -72,7 +74,7 @@ func TestAgentNamesDoNotCollideWithSubcommands(t *testing.T) {
 	t.Parallel()
 
 	subcommands := map[string]struct{}{"build": {}, "list": {}}
-	for _, name := range config.Names() {
+	for _, name := range agent.Names() {
 		if _, ok := subcommands[name]; ok {
 			t.Errorf("agent %q collides with a root subcommand", name)
 		}
@@ -99,7 +101,7 @@ func TestNewMountGuardRails(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			mount, err := newMount(tt.cwd, tt.home, tt.allow)
+			mount, err := project.NewMount(tt.cwd, tt.home, tt.allow)
 			if tt.want != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.want) {
 					t.Fatalf("newMount() error = %v, want %q", err, tt.want)
@@ -109,8 +111,9 @@ func TestNewMountGuardRails(t *testing.T) {
 			if err != nil {
 				t.Fatalf("newMount() error = %v", err)
 			}
-			if mount.ContainerPath != "/workspace" {
-				t.Errorf("container path = %q, want /workspace", mount.ContainerPath)
+			wantPath := filepath.Join("/workspace", filepath.Base(filepath.Clean(tt.cwd)))
+			if mount.ContainerPath != wantPath {
+				t.Errorf("container path = %q, want %q", mount.ContainerPath, wantPath)
 			}
 		})
 	}
@@ -120,32 +123,32 @@ func TestResolveProjectMount(t *testing.T) {
 	t.Parallel()
 
 	home := t.TempDir()
-	project := filepath.Join(t.TempDir(), "project")
-	if err := os.Mkdir(project, 0o755); err != nil {
+	projectPath := filepath.Join(t.TempDir(), "project")
+	if err := os.Mkdir(projectPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	file := filepath.Join(project, "file.txt")
+	file := filepath.Join(projectPath, "file.txt")
 	if err := os.WriteFile(file, []byte("test"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	mount, err := resolveProjectMount(project, home, false)
+	mount, err := project.ResolveMount(projectPath, home, false)
 	if err != nil {
 		t.Fatalf("resolveProjectMount() error = %v", err)
 	}
-	resolvedProject, err := filepath.EvalSymlinks(project)
+	resolvedProject, err := filepath.EvalSymlinks(projectPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mount.HostPath != resolvedProject || mount.ContainerPath != "/workspace" {
-		t.Fatalf("resolveProjectMount() = %+v, want host %q at /workspace", mount, resolvedProject)
+	if mount.HostPath != resolvedProject || mount.ContainerPath != "/workspace/project" {
+		t.Fatalf("resolveProjectMount() = %+v, want host %q at /workspace/project", mount, resolvedProject)
 	}
 
-	if _, err := resolveProjectMount(file, home, false); err == nil || !strings.Contains(err.Error(), "not a directory") {
+	if _, err := project.ResolveMount(file, home, false); err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf("resolveProjectMount(file) error = %v, want not-a-directory error", err)
 	}
 
-	if _, err := resolveProjectMount(home, home, false); err == nil || !strings.Contains(err.Error(), "entire home directory") {
+	if _, err := project.ResolveMount(home, home, false); err == nil || !strings.Contains(err.Error(), "entire home directory") {
 		t.Fatalf("resolveProjectMount(home) error = %v, want broad-mount rejection", err)
 	}
 }
@@ -153,10 +156,10 @@ func TestResolveProjectMount(t *testing.T) {
 func TestNoMountAndWorkdirAreIncompatible(t *testing.T) {
 	t.Parallel()
 
-	flags := runFlags{noMount: true, workDir: "/tmp"}
-	options := &container.Options{}
-	if err := configureMounts(options, flags); err == nil || !strings.Contains(err.Error(), "cannot be used with --no-mount") {
-		t.Fatalf("configureMounts() error = %v, want incompatible-flags error", err)
+	request := app.Request{NoMount: true, WorkDir: "/tmp"}
+	options := &docker.Options{}
+	if err := app.ConfigureMounts(options, request); err == nil || !strings.Contains(err.Error(), "cannot be used with --no-mount") {
+		t.Fatalf("ConfigureMounts() error = %v, want incompatible-flags error", err)
 	}
 }
 
@@ -177,15 +180,15 @@ func TestInvalidEnvFlagRejected(t *testing.T) {
 func TestAgentCommandUsesRegistryCommand(t *testing.T) {
 	t.Parallel()
 
-	agent, err := config.Lookup("codex")
+	codex, err := agent.Lookup("codex")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := agentCommand(agent), []string{"codex"}; !reflect.DeepEqual(got, want) {
+	if got, want := agentCommand(codex), []string{"codex"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("agentCommand() = %v, want %v", got, want)
 	}
 
-	claude, err := config.Lookup("claude")
+	claude, err := agent.Lookup("claude")
 	if err != nil {
 		t.Fatal(err)
 	}

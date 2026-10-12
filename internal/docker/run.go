@@ -1,56 +1,51 @@
-package container
+package docker
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 
-	"github.com/JeremyOrr4/caged/internal/config"
+	"github.com/JeremyOrr4/caged/internal/plan"
 )
 
 // Options configures a disposable Docker container.
-type Options struct {
-	Image         string
-	Command       []string
-	Mount         *Mount
-	ConfigMounts  []config.ResolvedMount
-	EnvVars       []string
-	ReturnToShell bool
-}
+type Options = plan.RunSpec
 
 // Mount maps a host directory into a container directory.
-type Mount struct {
-	HostPath      string
-	ContainerPath string
-}
+type Mount = plan.Mount
 
 // Run starts an interactive, disposable Docker container.
-func Run(options Options) (runErr error) {
+func Run(options Options) error {
+	if err := CheckDocker(); err != nil {
+		return err
+	}
 	docker, err := exec.LookPath("docker")
 	if err != nil {
 		return fmt.Errorf("docker not found, is Docker installed and running?: %w", err)
 	}
 
-	configMounts, cleanup, err := stageConfigs(options.ConfigMounts)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := cleanup(); err != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("remove staged configs: %w", err))
-		}
-	}()
-	options.ConfigMounts = configMounts
-
 	args := buildArgs(options, runtime.GOOS, os.Getuid(), os.Getgid())
 	cmd := exec.Command(docker, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var stderr bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	if err := cmd.Run(); err != nil {
+		if runtime.GOOS == "darwin" && looksLikeSharedPathError(stderr.String()) {
+			return fmt.Errorf("Docker could not mount the project path; in Docker Desktop, add its parent directory under Settings > Resources > File Sharing: %w", err)
+		}
+		return err
+	}
+	return nil
+}
 
-	return cmd.Run()
+func looksLikeSharedPathError(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "mounts denied") || strings.Contains(message, "not shared") || strings.Contains(message, "mount denied")
 }
 
 func buildArgs(options Options, goos string, uid, gid int) []string {
@@ -62,7 +57,6 @@ func buildArgs(options Options, goos string, uid, gid int) []string {
 			"-w", options.Mount.ContainerPath,
 		)
 	}
-	hasConfigMount := len(options.ConfigMounts) > 0
 	for _, mount := range options.ConfigMounts {
 		volume := mount.HostPath + ":" + mount.DestPath
 		if !mount.Writable {
@@ -70,7 +64,7 @@ func buildArgs(options Options, goos string, uid, gid int) []string {
 		}
 		args = append(args, "-v", volume)
 	}
-	if goos == "linux" || (goos == "darwin" && hasConfigMount) {
+	if goos == "linux" {
 		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))
 	}
 	for _, env := range options.EnvVars {
