@@ -22,6 +22,11 @@ def is_excluded(relative, name, patterns):
         for pattern in patterns
     )
 
+def copy_file(src, dest):
+    if not (os.path.isfile(src) or os.path.islink(src)):
+        return
+    shutil.copy2(src, dest, follow_symlinks=False)
+
 for item in payload:
     staged = item.get("staged")
     dest = item.get("dest")
@@ -46,10 +51,9 @@ for item in payload:
                 rel = os.path.join(rel_root, name) if rel_root else name
                 if is_excluded(rel, name, excludes):
                     continue
-                shutil.copy2(
+                copy_file(
                     os.path.join(root, name),
                     os.path.join(target_root, name),
-                    follow_symlinks=False,
                 )
         continue
 
@@ -57,7 +61,7 @@ for item in payload:
     if is_excluded(name, name, excludes):
         continue
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    shutil.copy2(staged, dest, follow_symlinks=False)
+    copy_file(staged, dest)
 PY
 }
 

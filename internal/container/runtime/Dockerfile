@@ -26,11 +26,13 @@ RUN useradd -m -d /home/caged -s /bin/bash caged \
     && git config --system --add safe.directory /workspace \
     && echo 'export PATH="/home/caged/.local/bin:/home/caged/.pi/agent/bin:$PATH"' >> /home/caged/.profile
 
-RUN curl -fsSL https://claude.ai/install.sh | bash \
-    && curl -fsSL https://pi.dev/install.sh | sh \
+RUN mkdir -p /opt/caged/pi-home \
+    && curl -fsSL https://claude.ai/install.sh | bash \
+    && HOME=/opt/caged/pi-home sh -c 'curl -fsSL https://pi.dev/install.sh | sh' \
     && curl -fsSL https://chatgpt.com/codex/install.sh | sh \
     && npm install -g @google/gemini-cli \
     && rm -f /home/caged/.claude.json \
+    && ln -sf /opt/caged/pi-home/.pi/agent/bin/pi /usr/local/bin/pi \
     && mv /home/caged/.local/bin/codex /usr/local/bin/codex-real \
     && printf '%s\n' '#!/bin/sh' 'exec /usr/local/bin/codex-real --no-daemon "$@"' > /usr/local/bin/codex \
     && chmod 0755 /usr/local/bin/codex

@@ -56,6 +56,9 @@ func TestEmbeddedEntrypointCopiesConfigAndReturnsToShell(t *testing.T) {
 	if !strings.Contains(entrypoint, "copy_host_config") {
 		t.Error("embedded entrypoint does not copy staged configs")
 	}
+	if !strings.Contains(entrypoint, "os.path.isfile(src) or os.path.islink(src)") {
+		t.Error("embedded entrypoint does not skip sockets and other special config files")
+	}
 	if !strings.Contains(entrypoint, `CAGED_RETURN_TO_SHELL`) || !strings.Contains(entrypoint, "bash -i") {
 		t.Error("embedded entrypoint does not open an interactive shell after agent exit")
 	}
@@ -74,5 +77,19 @@ func TestRuntimeImageLeavesClaudeConfigDestinationWritable(t *testing.T) {
 
 	if !strings.Contains(string(runtimeDockerfile), "rm -f /home/caged/.claude.json") {
 		t.Fatal("runtime image does not remove the installer-created Claude config file")
+	}
+}
+
+func TestRuntimePiInstallDoesNotOverlapHostConfigMount(t *testing.T) {
+	t.Parallel()
+
+	dockerfile := string(runtimeDockerfile)
+	for _, expected := range []string{
+		"HOME=/opt/caged/pi-home",
+		"ln -sf /opt/caged/pi-home/.pi/agent/bin/pi /usr/local/bin/pi",
+	} {
+		if !strings.Contains(dockerfile, expected) {
+			t.Errorf("runtime Dockerfile missing Pi install isolation %q", expected)
+		}
 	}
 }

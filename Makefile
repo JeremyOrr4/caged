@@ -4,6 +4,7 @@ IMAGE_NAME := caged-dev
 VERSION ?= dev
 
 build:
+	mkdir -p bin
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/caged ./cmd/caged
 
 run:

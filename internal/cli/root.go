@@ -17,6 +17,7 @@ type runTarget struct {
 
 type runFlags struct {
 	noMount         bool
+	workDir         string
 	noConfig        bool
 	noAuth          bool
 	verbose         bool
@@ -27,6 +28,7 @@ type runFlags struct {
 // NewRootCmd creates the root caged command.
 func NewRootCmd(version string) *cobra.Command {
 	var noMount bool
+	var workDir string
 	var noConfig bool
 	var noAuth bool
 	var verbose bool
@@ -59,6 +61,7 @@ func NewRootCmd(version string) *cobra.Command {
 			}
 			flags := runFlags{
 				noMount:         noMount,
+				workDir:         workDir,
 				noConfig:        noConfig,
 				noAuth:          noAuth,
 				verbose:         verbose,
@@ -72,6 +75,7 @@ func NewRootCmd(version string) *cobra.Command {
 	cmd.AddCommand(newBuildCmd())
 	cmd.AddCommand(newListCmd())
 	cmd.Flags().BoolVar(&noMount, "no-mount", false, "do not mount the current working directory")
+	cmd.Flags().StringVarP(&workDir, "workdir", "w", "", "mount this host directory at /workspace")
 	cmd.Flags().BoolVar(&allowBroadMount, "allow-broad-mount", false, "allow mounting the filesystem root or home directory")
 	cmd.Flags().BoolVar(&noConfig, "no-config", false, "do not mount any host AI config into the container")
 	cmd.Flags().BoolVar(&noAuth, "no-auth", false, "exclude allowlisted agent credentials from the container")
@@ -170,20 +174,23 @@ func runContainer(target runTarget, flags runFlags) error {
 }
 
 func configureMounts(options *container.Options, flags runFlags) error {
+	if flags.noMount && flags.workDir != "" {
+		return fmt.Errorf("--workdir cannot be used with --no-mount")
+	}
 	if !flags.noMount {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("get current working directory: %w", err)
-		}
-		cwd, err = filepath.Abs(cwd)
-		if err != nil {
-			return fmt.Errorf("resolve current working directory: %w", err)
+		workDir := flags.workDir
+		if workDir == "" {
+			var err error
+			workDir, err = os.Getwd()
+			if err != nil {
+				return fmt.Errorf("get current working directory: %w", err)
+			}
 		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("find home directory: %w", err)
 		}
-		options.Mount, err = newMount(cwd, home, flags.allowBroadMount)
+		options.Mount, err = resolveProjectMount(workDir, home, flags.allowBroadMount)
 		if err != nil {
 			return err
 		}
@@ -202,6 +209,29 @@ func configureMounts(options *container.Options, flags runFlags) error {
 		logConfigReport(report)
 	}
 	return nil
+}
+
+func resolveProjectMount(workDir, home string, allowBroadMount bool) (*container.Mount, error) {
+	workDir, err := filepath.Abs(workDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve working directory: %w", err)
+	}
+	info, err := os.Stat(workDir)
+	if err != nil {
+		return nil, fmt.Errorf("inspect working directory %q: %w", workDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("working directory %q is not a directory", workDir)
+	}
+	workDir, err = filepath.EvalSymlinks(workDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve working directory symlinks: %w", err)
+	}
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil {
+		return nil, fmt.Errorf("resolve home directory: %w", err)
+	}
+	return newMount(workDir, home, allowBroadMount)
 }
 
 func logConfigReport(report config.ConfigReport) {

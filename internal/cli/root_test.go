@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/JeremyOrr4/caged/internal/config"
+	"github.com/JeremyOrr4/caged/internal/container"
 )
 
 func TestRootCmdRejectsTooManyArguments(t *testing.T) {
@@ -110,6 +113,50 @@ func TestNewMountGuardRails(t *testing.T) {
 				t.Errorf("container path = %q, want /workspace", mount.ContainerPath)
 			}
 		})
+	}
+}
+
+func TestResolveProjectMount(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	project := filepath.Join(t.TempDir(), "project")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(project, "file.txt")
+	if err := os.WriteFile(file, []byte("test"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mount, err := resolveProjectMount(project, home, false)
+	if err != nil {
+		t.Fatalf("resolveProjectMount() error = %v", err)
+	}
+	resolvedProject, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mount.HostPath != resolvedProject || mount.ContainerPath != "/workspace" {
+		t.Fatalf("resolveProjectMount() = %+v, want host %q at /workspace", mount, resolvedProject)
+	}
+
+	if _, err := resolveProjectMount(file, home, false); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("resolveProjectMount(file) error = %v, want not-a-directory error", err)
+	}
+
+	if _, err := resolveProjectMount(home, home, false); err == nil || !strings.Contains(err.Error(), "entire home directory") {
+		t.Fatalf("resolveProjectMount(home) error = %v, want broad-mount rejection", err)
+	}
+}
+
+func TestNoMountAndWorkdirAreIncompatible(t *testing.T) {
+	t.Parallel()
+
+	flags := runFlags{noMount: true, workDir: "/tmp"}
+	options := &container.Options{}
+	if err := configureMounts(options, flags); err == nil || !strings.Contains(err.Error(), "cannot be used with --no-mount") {
+		t.Fatalf("configureMounts() error = %v, want incompatible-flags error", err)
 	}
 }
 
