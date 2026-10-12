@@ -1,9 +1,10 @@
-.PHONY: build run test fmt vet docker-build docker-shell
+.PHONY: build run test fmt vet install docker-build docker-shell
 
 IMAGE_NAME := caged-dev
+VERSION ?= dev
 
 build:
-	go build -o bin/caged ./cmd/caged
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/caged ./cmd/caged
 
 run:
 	go run ./cmd/caged
@@ -16,6 +17,9 @@ fmt:
 
 vet:
 	go vet ./...
+
+install:
+	go install -ldflags "-X main.version=$(VERSION)" ./cmd/caged
 
 docker-build:
 	docker build -t $(IMAGE_NAME) .

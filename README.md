@@ -1,26 +1,25 @@
 # caged
 
-`caged` will run AI coding CLIs in Docker containers while mounting the current
-working directory. This first step provides the project scaffold and a
-hello-world executable only.
+`caged` runs AI coding CLIs in Docker containers. This step opens a disposable,
+blank Ubuntu shell; it does not mount your working directory or configure an AI
+agent yet.
 
-## Run it locally
+## Usage
 
-Build the binary, then pass the AI CLI name as its argument:
+`caged` opens a blank interactive Ubuntu container shell. Leave the shell with
+`exit` or Ctrl-D; the container is removed automatically.
 
 ```sh
 make build
-./bin/caged pi
+./bin/caged
 ```
 
-For a one-off run without creating a binary:
+Install it to your Go binary directory to run it from anywhere:
 
 ```sh
-go run ./cmd/caged claude
+make install
+caged
 ```
-
-At this first stage, the command only prints a hello message and the argument
-it received; it does not start Docker or an AI CLI yet.
 
 ## Build and check locally
 
@@ -30,7 +29,7 @@ make test
 make vet
 ```
 
-## Run it in Docker
+## Build the development environment
 
 Start Docker Desktop first, then build the development image and open a shell
 with this repository mounted at `/workspace`:
@@ -40,17 +39,17 @@ make docker-build
 make docker-shell
 ```
 
-Inside the container, build and run the same command:
+Inside the container, build and run caged:
 
 ```sh
 make build
-./bin/caged pi
+./bin/caged
 ```
 
 The repository is mounted at `/workspace`, so build output is written to
 `./bin` on the host. You can leave the container with `exit`.
 
-## Cross-compile in Docker
+## Cross-compile in the development environment
 
 From the container shell, write platform-specific binaries into the host's
 `bin/` directory:
