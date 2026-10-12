@@ -95,10 +95,11 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"run", "-it", "--rm",
 				"-v", "caged-claude-home:/home/caged/.claude",
-				"--user", "3001:3002",
+				"--user", "0:0",
 				"-e", "ANTHROPIC_API_KEY",
 				"-e", "GEMINI_API_KEY",
 				config.RuntimeImage,
+				"--caged-run-as", "3001:3002", "--",
 				"claude",
 			},
 		},

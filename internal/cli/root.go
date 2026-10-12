@@ -206,49 +206,57 @@ func runContainer(image string, command []string, agent config.Agent, noMount bo
 		options.Mount = mount
 	}
 
-	if !noConfig && agent.Name != "" {
+	localAgentConfig := false
+	if agent.Name != "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("find home directory: %w", err)
 		}
-		for _, configPath := range agent.ConfigPaths {
-			hostPath := filepath.Join(home, filepath.Clean(configPath.HostPath))
-			if !withAuth && configPath.IsAuth {
-				if verbose {
-					fmt.Fprintf(os.Stderr, "config: excluded auth path %s\n", hostPath)
-				}
-				continue
-			}
-			if _, statErr := os.Stat(hostPath); statErr != nil {
-				if verbose {
-					fmt.Fprintf(os.Stderr, "config: missing %s\n", hostPath)
-				}
-				continue
-			}
-			resolvedHost, err := filepath.EvalSymlinks(hostPath)
+		localAgentConfig = hasLocalAgentConfig(agent, home)
+		if !noConfig {
+			resolvedHome, err := filepath.EvalSymlinks(home)
 			if err != nil {
-				if verbose {
-					fmt.Fprintf(os.Stderr, "config: refused %s (unresolvable symlink)\n", hostPath)
+				return fmt.Errorf("resolve home directory: %w", err)
+			}
+			for _, configPath := range agent.ConfigPaths {
+				hostPath := filepath.Join(home, filepath.Clean(configPath.HostPath))
+				if !withAuth && configPath.IsAuth {
+					if verbose {
+						fmt.Fprintf(os.Stderr, "config: excluded auth path %s\n", hostPath)
+					}
+					continue
 				}
-				continue
-			}
-			if !config.IsWithinHome(resolvedHost, home) {
-				if verbose {
-					fmt.Fprintf(os.Stderr, "config: refused %s (resolves outside home)\n", hostPath)
+				if _, statErr := os.Stat(hostPath); statErr != nil {
+					if verbose {
+						fmt.Fprintf(os.Stderr, "config: missing %s\n", hostPath)
+					}
+					continue
 				}
-				continue
+				resolvedHost, err := filepath.EvalSymlinks(hostPath)
+				if err != nil {
+					if verbose {
+						fmt.Fprintf(os.Stderr, "config: refused %s (unresolvable symlink)\n", hostPath)
+					}
+					continue
+				}
+				if !config.IsWithinHome(resolvedHost, resolvedHome) {
+					if verbose {
+						fmt.Fprintf(os.Stderr, "config: refused %s (resolves outside home)\n", hostPath)
+					}
+					continue
+				}
+				if verbose {
+					fmt.Fprintf(os.Stderr, "config: pass %s -> %s\n", hostPath, filepath.Join("/home/caged", filepath.Clean(configPath.ContainerPath)))
+				}
 			}
-			if verbose {
-				fmt.Fprintf(os.Stderr, "config: pass %s -> %s\n", hostPath, filepath.Join("/home/caged", filepath.Clean(configPath.ContainerPath)))
-			}
+			options.ConfigMounts = config.ResolveConfigs(agent, home, func(path string) bool {
+				_, err := os.Stat(path)
+				return err == nil
+			}, withAuth)
 		}
-		options.ConfigMounts = config.ResolveConfigs(agent, home, func(path string) bool {
-			_, err := os.Stat(path)
-			return err == nil
-		}, withAuth)
 	}
 
-	if agent.Name != "" && !noMount && !noPersist {
+	if agent.Name != "" && localAgentConfig && !noMount && !noPersist {
 		for _, statePath := range agent.StatePaths {
 			options.VolumeMounts = append(options.VolumeMounts, container.VolumeMount{
 				Name:          config.StateVolumeName(agent.Name),
@@ -282,6 +290,19 @@ func runContainer(image string, command []string, agent config.Agent, noMount bo
 	}
 
 	return container.Run(options)
+}
+
+func hasLocalAgentConfig(agent config.Agent, home string) bool {
+	mounts := config.ResolveConfigs(agent, home, func(path string) bool {
+		_, err := os.Stat(path)
+		return err == nil
+	}, true)
+	for _, mount := range mounts {
+		if mount.Name != ".gitconfig" {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(items []string, needle string) bool {

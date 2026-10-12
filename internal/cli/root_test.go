@@ -2,8 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/JeremyOrr4/caged/internal/config"
 )
 
 func TestRootCmdRejectsTooManyArguments(t *testing.T) {
@@ -110,5 +114,51 @@ func TestInvalidEnvFlagRejected(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "invalid env name") {
 		t.Fatalf("Execute() error = %v, want invalid env name rejection", err)
+	}
+}
+
+func TestHasLocalAgentConfig(t *testing.T) {
+	t.Parallel()
+
+	agent, err := config.Lookup("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		setup     func(string) error
+		wantFound bool
+	}{
+		{
+			name: "agent config exists",
+			setup: func(home string) error {
+				return os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+			},
+			wantFound: true,
+		},
+		{
+			name:  "no agent config",
+			setup: func(string) error { return nil },
+		},
+		{
+			name: "git config alone does not enable persistence",
+			setup: func(home string) error {
+				return os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[user]\n"), 0o600)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			if err := tt.setup(home); err != nil {
+				t.Fatal(err)
+			}
+			if got := hasLocalAgentConfig(agent, home); got != tt.wantFound {
+				t.Errorf("hasLocalAgentConfig() = %v, want %v", got, tt.wantFound)
+			}
+		})
 	}
 }

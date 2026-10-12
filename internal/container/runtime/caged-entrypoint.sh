@@ -2,6 +2,38 @@
 set -euo pipefail
 umask 000
 
+run_as=""
+if [ "${1:-}" = "--caged-run-as" ]; then
+  run_as="${2:-}"
+  if [[ ! "${run_as}" =~ ^[0-9]+:[0-9]+$ ]]; then
+    echo "invalid internal run-as identity" >&2
+    exit 2
+  fi
+  shift 2
+  if [ "${1:-}" = "--" ]; then
+    shift
+  fi
+fi
+
+prepare_state_directories() {
+  [ -n "${run_as}" ] || return 0
+  [ "$(id -u)" -eq 0 ] || {
+    echo "cannot prepare persistent state volumes without root privileges" >&2
+    exit 1
+  }
+
+  for path in \
+    /home/caged/.config/pi \
+    /home/caged/.pi \
+    /home/caged/.claude \
+    /home/caged/.codex \
+    /home/caged/.gemini
+  do
+    mkdir -p "${path}"
+    chmod -R a+rwX "${path}"
+  done
+}
+
 copy_host_config() {
   if [ -z "${CAGED_CONFIG_MAP:-}" ] || [ "${CAGED_CONFIG_MAP}" = "null" ]; then
     return 0
@@ -60,7 +92,14 @@ PY
   done
 }
 
+prepare_state_directories
 copy_host_config
+
+if [ -n "${run_as}" ]; then
+  uid="${run_as%%:*}"
+  gid="${run_as##*:}"
+  exec setpriv --reuid "${uid}" --regid "${gid}" --clear-groups -- "$@"
+fi
 
 if [ "$#" -gt 0 ]; then
   exec "$@"

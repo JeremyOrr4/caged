@@ -156,6 +156,10 @@ func ResolveConfigs(agent Agent, home string, exists func(string) bool, withAuth
 	}
 
 	home = filepath.Clean(home)
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return nil
+	}
 	resolved := make([]ResolvedMount, 0, len(agent.ConfigPaths))
 	for _, path := range agent.ConfigPaths {
 		if !withAuth && path.IsAuth {
@@ -171,7 +175,7 @@ func ResolveConfigs(agent Agent, home string, exists func(string) bool, withAuth
 		if err != nil {
 			continue
 		}
-		if !IsWithinHome(resolvedHost, home) {
+		if !IsWithinHome(resolvedHost, resolvedHome) {
 			continue
 		}
 

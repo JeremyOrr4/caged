@@ -65,7 +65,9 @@ func buildArgs(options Options, goos string, uid, gid int) []string {
 			"-v", volume.Name+":"+volume.ContainerPath,
 		)
 	}
-	if goos == "linux" {
+	if goos == "linux" && len(options.VolumeMounts) > 0 {
+		args = append(args, "--user", "0:0")
+	} else if goos == "linux" {
 		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))
 	}
 	if len(options.ConfigMounts) > 0 {
@@ -76,6 +78,9 @@ func buildArgs(options Options, goos string, uid, gid int) []string {
 	}
 
 	args = append(args, options.Image)
+	if goos == "linux" && len(options.VolumeMounts) > 0 {
+		args = append(args, "--caged-run-as", fmt.Sprintf("%d:%d", uid, gid), "--")
+	}
 	return append(args, options.Command...)
 }
 

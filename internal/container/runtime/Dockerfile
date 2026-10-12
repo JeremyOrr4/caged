@@ -14,12 +14,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nano \
     python3 \
     bash \
+    util-linux \
     && curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -d /home/caged -s /bin/bash caged \
     && mkdir -p /workspace \
+    && mkdir -p /home/caged/.config/pi /home/caged/.pi /home/caged/.claude /home/caged/.codex /home/caged/.gemini \
+    && chmod 0777 /home/caged/.config /home/caged/.config/pi /home/caged/.pi /home/caged/.claude /home/caged/.codex /home/caged/.gemini \
     && chmod 0777 /home/caged \
     && git config --system --add safe.directory /workspace \
     && echo 'export PATH="/home/caged/.local/bin:/home/caged/.pi/agent/bin:$PATH"' >> /home/caged/.profile

@@ -56,7 +56,11 @@ is intentional, explicitly acknowledge it with `--allow-broad-mount`.
 Host config files are staged read-only into the container and copied into the
 agent's own home directory before startup. Credential files are omitted unless
 `--with-auth` is passed. The copied files never overwrite the host. The runtime
-keeps agent state in a named Docker volume (`caged-<agent>-home`) by default.
+keeps agent state in a named Docker volume (`caged-<agent>-home`) when an
+allowlisted agent config exists on the host. Host-side config changes are copied
+into the volume at startup; container-side edits do not sync back to the host.
+If no agent config exists locally, the run is disposable and its state is
+discarded when the container exits.
 
 Install it to your Go binary directory to run it from anywhere:
 
