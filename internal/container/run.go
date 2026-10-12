@@ -5,29 +5,23 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strings"
 
 	"github.com/JeremyOrr4/caged/internal/config"
 )
 
 // Options configures a disposable Docker container.
 type Options struct {
-	Image        string
-	Command      []string
-	Mount        *Mount
-	ConfigMounts []config.ResolvedMount
-	EnvVars      []string
-	VolumeMounts []VolumeMount
+	Image         string
+	Command       []string
+	Mount         *Mount
+	ConfigMounts  []config.ResolvedMount
+	EnvVars       []string
+	ReturnToShell bool
 }
 
 // Mount maps a host directory into a container directory.
 type Mount struct {
 	HostPath      string
-	ContainerPath string
-}
-
-type VolumeMount struct {
-	Name          string
 	ContainerPath string
 }
 
@@ -38,7 +32,11 @@ func Run(options Options) error {
 		return fmt.Errorf("docker not found, is Docker installed and running?: %w", err)
 	}
 
-	cmd := exec.Command(docker, buildArgs(options, runtime.GOOS, os.Getuid(), os.Getgid())...)
+	args, err := buildArgs(options, runtime.GOOS, os.Getuid(), os.Getgid())
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(docker, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -46,7 +44,7 @@ func Run(options Options) error {
 	return cmd.Run()
 }
 
-func buildArgs(options Options, goos string, uid, gid int) []string {
+func buildArgs(options Options, goos string, uid, gid int) ([]string, error) {
 	args := []string{"run", "-it", "--rm"}
 
 	if options.Mount != nil {
@@ -55,75 +53,40 @@ func buildArgs(options Options, goos string, uid, gid int) []string {
 			"-w", options.Mount.ContainerPath,
 		)
 	}
+	hasWritableConfig := false
 	for _, mount := range options.ConfigMounts {
+		if mount.Writable {
+			args = append(args, "-v", mount.HostPath+":"+mount.DestPath)
+			hasWritableConfig = true
+			continue
+		}
 		args = append(args,
 			"-v", mount.HostPath+":"+mount.StagedPath+":ro",
 		)
 	}
-	for _, volume := range options.VolumeMounts {
-		args = append(args,
-			"-v", volume.Name+":"+volume.ContainerPath,
-		)
-	}
-	if goos == "linux" && len(options.VolumeMounts) > 0 {
-		args = append(args, "--user", "0:0")
-	} else if goos == "linux" {
+	if goos == "linux" || (goos == "darwin" && hasWritableConfig) {
 		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))
 	}
-	if len(options.ConfigMounts) > 0 {
-		args = append(args, "-e", "CAGED_CONFIG_MAP="+configEnvJSON(options.ConfigMounts))
+	stagedMounts := make([]config.ResolvedMount, 0, len(options.ConfigMounts))
+	for _, mount := range options.ConfigMounts {
+		if !mount.Writable {
+			stagedMounts = append(stagedMounts, mount)
+		}
+	}
+	if len(stagedMounts) > 0 {
+		configMap, err := configEnvJSON(stagedMounts)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "-e", "CAGED_CONFIG_MAP="+configMap)
 	}
 	for _, env := range options.EnvVars {
 		args = append(args, "-e", env)
 	}
+	if options.ReturnToShell {
+		args = append(args, "-e", "CAGED_RETURN_TO_SHELL=1")
+	}
 
 	args = append(args, options.Image)
-	if goos == "linux" && len(options.VolumeMounts) > 0 {
-		args = append(args, "--caged-run-as", fmt.Sprintf("%d:%d", uid, gid), "--")
-	}
-	return append(args, options.Command...)
-}
-
-func ResetVolumesForAgent(agentName string, yes bool) error {
-	return resetVolume(config.StateVolumeName(agentName))
-}
-
-func ResetVolumes(all bool, yes bool) error {
-	if !all {
-		return fmt.Errorf("reset requires --all or an agent name")
-	}
-	out, err := exec.Command("docker", "volume", "ls", "--format", "{{.Name}}").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("list docker volumes: %w", err)
-	}
-	volumes := splitVolumeNames(string(out))
-	for _, volume := range volumes {
-		if err := resetVolume(volume); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func splitVolumeNames(output string) []string {
-	lines := make([]string, 0)
-	for _, line := range strings.Split(output, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || !strings.HasPrefix(trimmed, "caged-") || !strings.HasSuffix(trimmed, "-home") {
-			continue
-		}
-		lines = append(lines, trimmed)
-	}
-	return lines
-}
-
-func resetVolume(volumeName string) error {
-	if volumeName == "" {
-		return nil
-	}
-	cmd := exec.Command("docker", "volume", "rm", volumeName)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("remove docker volume %s: %w: %s", volumeName, err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return append(args, options.Command...), nil
 }

@@ -2,8 +2,7 @@ package cli
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -66,6 +65,17 @@ func TestResolveTarget(t *testing.T) {
 	}
 }
 
+func TestAgentNamesDoNotCollideWithSubcommands(t *testing.T) {
+	t.Parallel()
+
+	subcommands := map[string]struct{}{"build": {}, "list": {}}
+	for _, name := range config.Names() {
+		if _, ok := subcommands[name]; ok {
+			t.Errorf("agent %q collides with a root subcommand", name)
+		}
+	}
+}
+
 func TestNewMountGuardRails(t *testing.T) {
 	t.Parallel()
 
@@ -117,48 +127,22 @@ func TestInvalidEnvFlagRejected(t *testing.T) {
 	}
 }
 
-func TestHasLocalAgentConfig(t *testing.T) {
+func TestAgentCommandUsesRegistryCommand(t *testing.T) {
 	t.Parallel()
 
-	agent, err := config.Lookup("claude")
+	agent, err := config.Lookup("codex")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	tests := []struct {
-		name      string
-		setup     func(string) error
-		wantFound bool
-	}{
-		{
-			name: "agent config exists",
-			setup: func(home string) error {
-				return os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
-			},
-			wantFound: true,
-		},
-		{
-			name:  "no agent config",
-			setup: func(string) error { return nil },
-		},
-		{
-			name: "git config alone does not enable persistence",
-			setup: func(home string) error {
-				return os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[user]\n"), 0o600)
-			},
-		},
+	if got, want := agentCommand(agent), []string{"codex"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("agentCommand() = %v, want %v", got, want)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			home := t.TempDir()
-			if err := tt.setup(home); err != nil {
-				t.Fatal(err)
-			}
-			if got := hasLocalAgentConfig(agent, home); got != tt.wantFound {
-				t.Errorf("hasLocalAgentConfig() = %v, want %v", got, tt.wantFound)
-			}
-		})
+	claude, err := config.Lookup("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := agentCommand(claude), []string{"claude"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("agentCommand() = %v, want %v", got, want)
 	}
 }

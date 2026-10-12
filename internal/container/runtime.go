@@ -56,24 +56,33 @@ func BuildRuntimeImage(noCache bool) error {
 	return cmd.Run()
 }
 
-func configEnvJSON(mounts []config.ResolvedMount) string {
+type configMountEnv struct {
+	Agent    string   `json:"agent"`
+	Name     string   `json:"name"`
+	Host     string   `json:"host"`
+	Staged   string   `json:"staged"`
+	Dest     string   `json:"dest"`
+	Excludes []string `json:"excludes"`
+}
+
+func configEnvJSON(mounts []config.ResolvedMount) (string, error) {
 	if len(mounts) == 0 {
-		return ""
+		return "", nil
 	}
-	payload := make([]map[string]any, 0, len(mounts))
+	payload := make([]configMountEnv, 0, len(mounts))
 	for _, mount := range mounts {
-		payload = append(payload, map[string]any{
-			"agent":    mount.Agent,
-			"name":     mount.Name,
-			"host":     mount.HostPath,
-			"staged":   mount.StagedPath,
-			"dest":     mount.DestPath,
-			"excludes": mount.Excludes,
+		payload = append(payload, configMountEnv{
+			Agent:    mount.Agent,
+			Name:     mount.Name,
+			Host:     mount.HostPath,
+			Staged:   mount.StagedPath,
+			Dest:     mount.DestPath,
+			Excludes: mount.Excludes,
 		})
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("marshal config mount map: %w", err)
 	}
-	return string(data)
+	return string(data), nil
 }
