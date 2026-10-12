@@ -1,18 +1,28 @@
 # caged
 
-`caged` runs AI coding CLIs in Docker containers. This step opens a disposable,
-blank Ubuntu shell; it does not mount your working directory or configure an AI
-agent yet.
+`caged` runs AI coding CLIs in Docker containers. This step opens a disposable
+Ubuntu shell with your current working directory mounted at `/workspace`.
 
 ## Usage
 
-`caged` opens a blank interactive Ubuntu container shell. Leave the shell with
-`exit` or Ctrl-D; the container is removed automatically.
+`caged` opens an interactive Ubuntu container shell. The directory where you
+run the command is available in the container at `/workspace`, and the shell
+starts there. Leave the shell with `exit` or Ctrl-D; the container is removed
+automatically.
 
 ```sh
 make build
 ./bin/caged
 ```
+
+Use `--no-mount` for the previous blank-container behavior:
+
+```sh
+./bin/caged --no-mount
+```
+
+For safety, caged refuses to mount `/` or your entire home directory. If that
+is intentional, explicitly acknowledge it with `--allow-broad-mount`.
 
 Install it to your Go binary directory to run it from anywhere:
 
