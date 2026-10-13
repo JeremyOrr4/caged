@@ -3,3 +3,5 @@ dist/
 .env
 *.test
 .DS_Store
+**/.DS_Store
+docs/
