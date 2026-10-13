@@ -1,0 +1,8 @@
+args: ["--env" "bad-name" "claude"]
+exit code: 1
+error: invalid env name "bad-name"; must match ^[A-Za-z_][A-Za-z0-9_]*$
+leftover temp entries: 0
+=== stdout
+=== stderr
+invalid env name "bad-name"; must match ^[A-Za-z_][A-Za-z0-9_]*$
+=== docker invocations

@@ -6,14 +6,15 @@ import (
 
 	"github.com/JeremyOrr4/caged/internal/plan"
 	"github.com/JeremyOrr4/caged/internal/runtime"
+	"github.com/JeremyOrr4/caged/internal/system"
 )
 
-func TestBuildArgs(t *testing.T) {
+func TestRunArgs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		options Options
+		options plan.RunSpec
 		goos    string
 		uid     int
 		gid     int
@@ -21,7 +22,7 @@ func TestBuildArgs(t *testing.T) {
 	}{
 		{
 			name: "no mount on macOS",
-			options: Options{
+			options: plan.RunSpec{
 				Image:   "ubuntu:24.04",
 				Command: []string{"bash"},
 			},
@@ -30,10 +31,10 @@ func TestBuildArgs(t *testing.T) {
 		},
 		{
 			name: "mount with spaces on macOS",
-			options: Options{
+			options: plan.RunSpec{
 				Image:   "ubuntu:24.04",
 				Command: []string{"bash"},
-				Mount: &Mount{
+				Mount: &plan.Mount{
 					HostPath:      "/tmp/project with spaces",
 					ContainerPath: "/workspace",
 				},
@@ -48,9 +49,9 @@ func TestBuildArgs(t *testing.T) {
 		},
 		{
 			name: "mount on Linux maps host user",
-			options: Options{
+			options: plan.RunSpec{
 				Image: "ubuntu:24.04",
-				Mount: &Mount{HostPath: "/work", ContainerPath: "/workspace"},
+				Mount: &plan.Mount{HostPath: "/work", ContainerPath: "/workspace"},
 			},
 			goos: "linux",
 			uid:  1001,
@@ -65,10 +66,10 @@ func TestBuildArgs(t *testing.T) {
 		},
 		{
 			name: "agent command in runtime image",
-			options: Options{
+			options: plan.RunSpec{
 				Image:         runtime.Image,
 				Command:       []string{"claude"},
-				Mount:         &Mount{HostPath: "/project", ContainerPath: "/workspace"},
+				Mount:         &plan.Mount{HostPath: "/project", ContainerPath: "/workspace"},
 				ReturnToShell: true,
 			},
 			goos: "linux",
@@ -86,7 +87,7 @@ func TestBuildArgs(t *testing.T) {
 		},
 		{
 			name: "config read-write mount and env names",
-			options: Options{
+			options: plan.RunSpec{
 				Image:         runtime.Image,
 				Command:       []string{"claude"},
 				EnvVars:       []string{"ANTHROPIC_API_KEY", "GEMINI_API_KEY"},
@@ -115,7 +116,7 @@ func TestBuildArgs(t *testing.T) {
 		},
 		{
 			name: "Pi config mounts directly read-write",
-			options: Options{
+			options: plan.RunSpec{
 				Image: runtime.Image,
 				ConfigMounts: []plan.ConfigMount{{
 					Agent:    "pi",
@@ -136,7 +137,7 @@ func TestBuildArgs(t *testing.T) {
 		},
 		{
 			name: "config mount uses image user on macOS",
-			options: Options{
+			options: plan.RunSpec{
 				Image: runtime.Image,
 				ConfigMounts: []plan.ConfigMount{{
 					HostPath: "/tmp/caged-config",
@@ -155,7 +156,7 @@ func TestBuildArgs(t *testing.T) {
 		},
 		{
 			name: "Pi config is writable",
-			options: Options{
+			options: plan.RunSpec{
 				Image: runtime.Image,
 				ConfigMounts: []plan.ConfigMount{{
 					Agent:    "pi",
@@ -179,27 +180,27 @@ func TestBuildArgs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := buildArgs(tt.options, tt.goos, tt.uid, tt.gid)
+			got := runArgs(tt.options, system.Platform{OS: tt.goos, UID: tt.uid, GID: tt.gid})
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("buildArgs() = %q, want %q", got, tt.want)
+				t.Errorf("runArgs() = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestBuildArgsExposeOnlyPlannedMounts(t *testing.T) {
+func TestRunArgsExposeOnlyPlannedMounts(t *testing.T) {
 	t.Parallel()
 
-	options := Options{
+	options := plan.RunSpec{
 		Image: runtime.Image,
-		Mount: &Mount{HostPath: "/projects/current", ContainerPath: "/workspace/current"},
+		Mount: &plan.Mount{HostPath: "/projects/current", ContainerPath: "/workspace/current"},
 		ConfigMounts: []plan.ConfigMount{
 			{HostPath: "/home/user/.claude", DestPath: "/home/caged/.claude", Writable: true},
 			{HostPath: "/home/user/.gitconfig", DestPath: "/home/caged/.gitconfig", Writable: false},
 		},
 		Command: []string{"bash"},
 	}
-	args := buildArgs(options, "darwin", 0, 0)
+	args := runArgs(options, system.Platform{OS: "darwin"})
 	volumeCount := 0
 	for _, arg := range args {
 		if arg == "-v" {
@@ -214,14 +215,14 @@ func TestBuildArgsExposeOnlyPlannedMounts(t *testing.T) {
 	}
 }
 
-func TestBuildArgsMaskCodexRuntimeDirectories(t *testing.T) {
+func TestRunArgsMaskCodexRuntimeDirectories(t *testing.T) {
 	t.Parallel()
 
-	options := Options{Image: runtime.Image, ConfigMounts: []plan.ConfigMount{{
+	options := plan.RunSpec{Image: runtime.Image, ConfigMounts: []plan.ConfigMount{{
 		HostPath: "/home/user/.codex", DestPath: "/home/caged/.codex", Writable: true,
 		MaskPaths: []string{"app-server-control", "ipc"},
 	}}}
-	args := buildArgs(options, "darwin", 0, 0)
+	args := runArgs(options, system.Platform{OS: "darwin"})
 	want := []string{"--tmpfs", "/home/caged/.codex/app-server-control", "--tmpfs", "/home/caged/.codex/ipc"}
 	for i := 0; i < len(want); i += 2 {
 		found := false

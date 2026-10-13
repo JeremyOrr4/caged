@@ -1,0 +1,57 @@
+args: ["-w" "$ROOT/work/other" "pi"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+fake docker run output
+=== stderr
+WARNING: allowlisted agent credentials are available inside the container.
+=== docker invocations
+image
+inspect
+caged-runtime:latest
+---
+info
+--format
+{{.ServerVersion}}
+---
+run
+-it
+--rm
+-v
+$ROOT/work/other:/workspace/other
+-w
+/workspace/other
+-v
+$ROOT/home/.claude:/home/caged/.claude
+-v
+$ROOT/home/.codex:/home/caged/.codex
+--tmpfs
+/home/caged/.codex/app-server-control
+--tmpfs
+/home/caged/.codex/app-server-daemon
+--tmpfs
+/home/caged/.codex/ipc
+--tmpfs
+/home/caged/.codex/packages/app-server-daemon
+--tmpfs
+/home/caged/.codex/tmp/arg0
+-v
+$ROOT/home/.copilot:/home/caged/.copilot
+-v
+$ROOT/home/.gemini/oauth_creds.json:/home/caged/.gemini/oauth_creds.json
+-v
+$ROOT/home/.gemini/settings.json:/home/caged/.gemini/settings.json
+-v
+$ROOT/home/.config/gh:/home/caged/.config/gh
+-v
+$ROOT/home/.pi:/home/caged/.pi
+-v
+$ROOT/home/.gitconfig:/home/caged/.gitconfig:ro
+--user
+$UID:$GID
+-e
+CAGED_RETURN_TO_SHELL=1
+caged-runtime:latest
+pi
+---

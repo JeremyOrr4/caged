@@ -1,0 +1,24 @@
+args: ["--no-mount" "--no-config"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+fake docker run output
+=== stderr
+=== docker invocations
+image
+inspect
+caged-runtime:latest
+---
+info
+--format
+{{.ServerVersion}}
+---
+run
+-it
+--rm
+--user
+$UID:$GID
+caged-runtime:latest
+bash
+---

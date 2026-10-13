@@ -1,0 +1,8 @@
+args: ["--version"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+caged version test
+=== stderr
+=== docker invocations

@@ -1,0 +1,13 @@
+args: ["list"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+claude
+codex
+copilot
+gemini
+gh
+pi
+=== stderr
+=== docker invocations

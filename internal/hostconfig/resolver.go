@@ -1,266 +1,203 @@
+// Package hostconfig decides which host config paths are mounted into the
+// container and refuses anything that is unsafe to expose.
 package hostconfig
 
 import (
-	"fmt"
-	"os"
+	"io/fs"
 	"path/filepath"
-	"strings"
 
 	"github.com/JeremyOrr4/caged/internal/agent"
 	"github.com/JeremyOrr4/caged/internal/plan"
 )
 
-type ResolvedMount = plan.ConfigMount
-type ConfigReport struct {
-	Mounts  []ResolvedMount
-	Missing []string
-	Refused []string
+// containerHome is the home directory of the user inside the runtime image.
+const containerHome = "/home/caged"
+
+// FileSystem is the read-only filesystem access the resolver needs.
+type FileSystem interface {
+	Stat(name string) (fs.FileInfo, error)
+	Lstat(name string) (fs.FileInfo, error)
+	ReadDir(name string) ([]fs.DirEntry, error)
+	EvalSymlinks(path string) (string, error)
+	WalkDir(root string, fn fs.WalkDirFunc) error
 }
 
-func ResolveAllConfigsReport(home string, exists func(string) bool) ConfigReport {
-	report := ConfigReport{}
-	if exists == nil {
-		exists = func(path string) bool {
-			_, err := os.Stat(path)
-			return err == nil
-		}
-	}
+// Env looks up config-directory overrides such as CODEX_HOME.
+type Env interface {
+	LookupEnv(key string) (string, bool)
+}
+
+// SharedFile is a regular file in the home directory, such as .gitconfig,
+// that all agents share. It is mounted read-only at the same relative path
+// under the container home.
+type SharedFile struct {
+	Path        string // relative to the home directory
+	Description string // used in refusal messages
+}
+
+// DefaultSharedFiles returns the shared files caged mounts.
+func DefaultSharedFiles() []SharedFile {
+	return []SharedFile{{Path: ".gitconfig", Description: "shared git config"}}
+}
+
+// Resolver finds the agent config paths and shared files that can be mounted.
+type Resolver struct {
+	fs     FileSystem
+	env    Env
+	agents []agent.Agent
+	shared []SharedFile
+}
+
+// NewResolver returns a Resolver for the config paths of agents, in order,
+// followed by the shared files.
+func NewResolver(fsys FileSystem, env Env, agents []agent.Agent, shared []SharedFile) *Resolver {
+	return &Resolver{fs: fsys, env: env, agents: agents, shared: shared}
+}
+
+// Resolve inspects every config path under home and reports what will be
+// mounted, what is missing, and what is refused.
+func (r *Resolver) Resolve(home string) plan.ConfigReport {
 	home = filepath.Clean(home)
-	resolvedHome, err := filepath.EvalSymlinks(home)
+	resolvedHome, err := r.fs.EvalSymlinks(home)
 	if err != nil {
-		report.Refused = append(report.Refused, home+" (home cannot be resolved)")
-		return report
+		return plan.ConfigReport{Refused: []string{home + " (home cannot be resolved)"}}
 	}
-	seen := make(map[string]struct{})
-	for _, name := range agent.Names() {
-		entry, _ := agent.Lookup(name)
-		for _, path := range entry.ConfigPaths {
-			hostPath := filepath.Join(home, filepath.Clean(path.HostPath))
-			if path.EnvOverride != "" {
-				if override := os.Getenv(path.EnvOverride); override != "" {
-					if !filepath.IsAbs(override) {
-						override = filepath.Join(home, override)
-					}
-					hostPath = filepath.Clean(override)
-				}
-			}
-			if !exists(hostPath) {
-				report.Missing = appendUnique(report.Missing, hostPath)
-				continue
-			}
-			resolvedHost, err := filepath.EvalSymlinks(hostPath)
-			if err != nil {
-				report.Refused = appendUnique(report.Refused, hostPath+" (unresolvable symlink)")
-				continue
-			}
-			if filepath.Clean(resolvedHost) == filepath.Clean(resolvedHome) {
-				report.Refused = appendUnique(report.Refused, hostPath+" (config path resolves to the home directory)")
-				continue
-			}
-			if !IsWithinHome(resolvedHost, resolvedHome) {
-				report.Refused = appendUnique(report.Refused, hostPath+" (resolves outside home)")
-				continue
-			}
-			if len(path.MaskPaths) > 0 {
-				if err := validateMaskedConfigTree(resolvedHost, path.MaskPaths); err != nil {
-					report.Refused = appendUnique(report.Refused, hostPath+" ("+err.Error()+")")
-					continue
-				}
-				key := resolvedHost + "\x00" + filepath.Clean(path.ContainerPath)
-				if _, ok := seen[key]; !ok {
-					seen[key] = struct{}{}
-					report.Mounts = append(report.Mounts, ResolvedMount{
-						Agent: entry.Name, Name: filepath.Clean(path.HostPath), HostPath: resolvedHost,
-						DestPath: filepath.ToSlash(filepath.Join("/home/caged", filepath.Clean(path.ContainerPath))),
-						Writable: path.Writable, MaskPaths: append([]string(nil), path.MaskPaths...),
-					})
-				}
-				continue
-			}
-			mounts, refused := collectSafeMounts(resolvedHost)
-			for _, reason := range refused {
-				report.Refused = appendUnique(report.Refused, reason)
-			}
-			for _, mountPath := range mounts {
-				relative, err := filepath.Rel(resolvedHost, mountPath)
-				if err != nil {
-					report.Refused = appendUnique(report.Refused, hostPath+" (cannot map safe config path)")
-					continue
-				}
-				destPath := filepath.Clean(path.ContainerPath)
-				if relative != "." {
-					destPath = filepath.Join(destPath, relative)
-				}
-				key := mountPath + "\x00" + destPath
-				if _, ok := seen[key]; ok {
-					continue
-				}
-				seen[key] = struct{}{}
-				report.Mounts = append(report.Mounts, ResolvedMount{
-					Agent:    entry.Name,
-					Name:     filepath.Clean(path.HostPath),
-					HostPath: mountPath,
-					DestPath: filepath.ToSlash(filepath.Join("/home/caged", destPath)),
-					Writable: path.Writable,
-				})
-			}
+	pass := &resolution{fs: r.fs, home: home, resolvedHome: resolvedHome, seen: make(map[string]struct{})}
+	for _, definition := range r.agents {
+		for _, path := range definition.ConfigPaths {
+			pass.agentPath(definition.Name, path, r.hostPath(home, path))
 		}
 	}
-	// Git identity is shared across agents rather than duplicated in each entry.
-	sharedGitConfig := filepath.Join(home, ".gitconfig")
-	if exists(sharedGitConfig) {
-		resolved, resolveErr := filepath.EvalSymlinks(sharedGitConfig)
-		if resolveErr == nil && IsWithinHome(resolved, resolvedHome) {
-			if info, statErr := os.Stat(resolved); statErr == nil && info.Mode().IsRegular() {
-				report.Mounts = append(report.Mounts, ResolvedMount{Agent: "shared", Name: ".gitconfig", HostPath: resolved, DestPath: "/home/caged/.gitconfig", Writable: false})
-			} else {
-				report.Refused = appendUnique(report.Refused, sharedGitConfig+" (shared git config must be a regular file)")
-			}
-		} else {
-			report.Refused = appendUnique(report.Refused, sharedGitConfig+" (resolves outside home or cannot be resolved)")
-		}
-	} else {
-		report.Missing = appendUnique(report.Missing, sharedGitConfig)
+	for _, file := range r.shared {
+		pass.sharedFile(file)
 	}
-	return report
+	return pass.report
 }
 
-func validateMaskedConfigTree(root string, masks []string) error {
-	rootInfo, err := os.Stat(root)
+// hostPath is where a config path lives on the host. A set override variable
+// (absolute, or relative to home) replaces the default location.
+func (r *Resolver) hostPath(home string, path agent.ConfigPath) string {
+	hostPath := filepath.Join(home, filepath.Clean(path.HostPath))
+	if path.EnvOverride == "" {
+		return hostPath
+	}
+	override, _ := r.env.LookupEnv(path.EnvOverride)
+	if override == "" {
+		return hostPath
+	}
+	if !filepath.IsAbs(override) {
+		override = filepath.Join(home, override)
+	}
+	return filepath.Clean(override)
+}
+
+// resolution accumulates the report of one Resolve call.
+type resolution struct {
+	fs           FileSystem
+	home         string
+	resolvedHome string
+	seen         map[string]struct{} // host path + "\x00" + container path already mounted
+	report       plan.ConfigReport
+}
+
+// agentPath checks one agent config path and records its mounts, or why it
+// is missing or refused.
+func (r *resolution) agentPath(agentName string, path agent.ConfigPath, hostPath string) {
+	if !r.exists(hostPath) {
+		r.report.Missing = appendUnique(r.report.Missing, hostPath)
+		return
+	}
+	resolvedHost, err := r.fs.EvalSymlinks(hostPath)
 	if err != nil {
-		return err
+		r.refuse(hostPath + " (unresolvable symlink)")
+		return
 	}
-	if !rootInfo.IsDir() {
-		return fmt.Errorf("masked config root must be a directory")
+	if filepath.Clean(resolvedHost) == filepath.Clean(r.resolvedHome) {
+		r.refuse(hostPath + " (config path resolves to the home directory)")
+		return
 	}
-	maskPaths := make([]string, 0, len(masks))
-	for _, mask := range masks {
-		clean := filepath.Clean(mask)
-		if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("invalid config mask path %q", mask)
-		}
-		maskPaths = append(maskPaths, filepath.Join(root, clean))
+	if !isWithin(resolvedHost, r.resolvedHome) {
+		r.refuse(hostPath + " (resolves outside home)")
+		return
 	}
-	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	name, dest := filepath.Clean(path.HostPath), filepath.Clean(path.ContainerPath)
+	if len(path.MaskPaths) > 0 {
+		// A masked tree is mounted whole; tmpfs mounts hide the masked entries.
+		if err := validateMaskedConfigTree(r.fs, resolvedHost, path.MaskPaths); err != nil {
+			r.refuse(hostPath + " (" + err.Error() + ")")
+			return
 		}
-		if path != root {
-			for _, mask := range maskPaths {
-				if path == mask || IsWithinHome(path, mask) {
-					if entry.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-			}
-		}
-		info, err := os.Lstat(path)
+		r.addMount(agentName, name, resolvedHost, dest, path.Writable, append([]string(nil), path.MaskPaths...))
+		return
+	}
+	mounts, refused := collectSafeMounts(r.fs, resolvedHost)
+	for _, reason := range refused {
+		r.refuse(reason)
+	}
+	for _, mountPath := range mounts {
+		relative, err := filepath.Rel(resolvedHost, mountPath)
 		if err != nil {
-			return err
+			r.refuse(hostPath + " (cannot map safe config path)")
+			continue
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			resolved, err := filepath.EvalSymlinks(path)
-			if err != nil || !IsWithinHome(resolved, root) {
-				return fmt.Errorf("symlink %q resolves outside the config directory or cannot be resolved", path)
-			}
-			return nil
+		mountDest := dest
+		if relative != "." {
+			mountDest = filepath.Join(dest, relative)
 		}
-		if !info.IsDir() && !info.Mode().IsRegular() {
-			return fmt.Errorf("special file %q is not covered by a config mask", path)
-		}
-		return nil
+		r.addMount(agentName, name, mountPath, mountDest, path.Writable, nil)
+	}
+}
+
+// sharedFile checks one shared file. It must resolve inside home and be a
+// regular file, and it is always mounted read-only.
+func (r *resolution) sharedFile(file SharedFile) {
+	name := filepath.Clean(file.Path)
+	hostPath := filepath.Join(r.home, name)
+	if !r.exists(hostPath) {
+		r.report.Missing = appendUnique(r.report.Missing, hostPath)
+		return
+	}
+	resolved, err := r.fs.EvalSymlinks(hostPath)
+	if err != nil || !isWithin(resolved, r.resolvedHome) {
+		r.refuse(hostPath + " (resolves outside home or cannot be resolved)")
+		return
+	}
+	if info, err := r.fs.Stat(resolved); err != nil || !info.Mode().IsRegular() {
+		r.refuse(hostPath + " (" + file.Description + " must be a regular file)")
+		return
+	}
+	r.report.Mounts = append(r.report.Mounts, plan.ConfigMount{
+		Agent:    "shared",
+		Name:     name,
+		HostPath: resolved,
+		DestPath: filepath.ToSlash(filepath.Join(containerHome, name)),
+		Writable: false,
 	})
 }
 
-func collectSafeMounts(root string) ([]string, []string) {
-	var mounts, refused []string
-	var collect func(string)
-	collect = func(path string) {
-		entries, err := os.ReadDir(path)
-		if err != nil {
-			info, statErr := os.Lstat(path)
-			if statErr == nil && info.Mode().IsRegular() {
-				mounts = append(mounts, path)
-			} else {
-				refused = append(refused, path+" (cannot inspect config entry safely)")
-			}
-			return
-		}
-		if subtreeIsSafe(path) {
-			mounts = append(mounts, path)
-			return
-		}
-		for _, entry := range entries {
-			child := filepath.Join(path, entry.Name())
-			info, err := os.Lstat(child)
-			if err != nil {
-				refused = append(refused, child+" (cannot inspect config entry safely)")
-				continue
-			}
-			if info.IsDir() {
-				collect(child)
-			} else if info.Mode().IsRegular() {
-				mounts = append(mounts, child)
-			} else {
-				refused = append(refused, child+" (symlinks and special files are excluded from config mounts)")
-			}
-		}
+// addMount records a mount unless the same host path is already mounted at
+// the same container path.
+func (r *resolution) addMount(agentName, name, hostPath, dest string, writable bool, masks []string) {
+	key := hostPath + "\x00" + dest
+	if _, ok := r.seen[key]; ok {
+		return
 	}
-	info, err := os.Lstat(root)
-	if err != nil {
-		return nil, []string{root + " (cannot inspect config root safely)"}
-	}
-	if info.Mode().IsRegular() {
-		return []string{root}, nil
-	}
-	if !info.IsDir() {
-		return nil, []string{root + " (config root is not a regular file or directory)"}
-	}
-	collect(root)
-	return mounts, refused
+	r.seen[key] = struct{}{}
+	r.report.Mounts = append(r.report.Mounts, plan.ConfigMount{
+		Agent:     agentName,
+		Name:      name,
+		HostPath:  hostPath,
+		DestPath:  filepath.ToSlash(filepath.Join(containerHome, dest)),
+		Writable:  writable,
+		MaskPaths: masks,
+	})
 }
 
-func subtreeIsSafe(root string) bool {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return false
-	}
-	for _, entry := range entries {
-		path := filepath.Join(root, entry.Name())
-		info, err := os.Lstat(path)
-		if err != nil {
-			return false
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return false
-		}
-		if info.IsDir() {
-			if !subtreeIsSafe(path) {
-				return false
-			}
-		} else if !info.Mode().IsRegular() {
-			return false
-		}
-	}
-	return true
+func (r *resolution) exists(path string) bool {
+	_, err := r.fs.Stat(path)
+	return err == nil
 }
 
-func appendUnique(values []string, value string) []string {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
-	}
-	return append(values, value)
-}
-
-func IsWithinHome(path, home string) bool {
-	path = filepath.Clean(path)
-	home = filepath.Clean(home)
-	rel, err := filepath.Rel(home, path)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+func (r *resolution) refuse(reason string) {
+	r.report.Refused = appendUnique(r.report.Refused, reason)
 }

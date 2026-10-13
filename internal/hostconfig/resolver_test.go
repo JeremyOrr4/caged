@@ -7,7 +7,25 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/JeremyOrr4/caged/internal/agent"
+	"github.com/JeremyOrr4/caged/internal/plan"
+	"github.com/JeremyOrr4/caged/internal/system"
 )
+
+// fakeEnv is a fixed environment for config-directory overrides.
+type fakeEnv map[string]string
+
+func (e fakeEnv) LookupEnv(key string) (string, bool) {
+	value, ok := e[key]
+	return value, ok
+}
+
+// resolveConfigs runs the production resolver on the real filesystem with the
+// built-in agents and a controlled environment.
+func resolveConfigs(home string, env fakeEnv) plan.ConfigReport {
+	return NewResolver(system.FS{}, env, agent.Builtin().All(), DefaultSharedFiles()).Resolve(home)
+}
 
 func TestResolveAllConfigsMountsExistingConfigReadWrite(t *testing.T) {
 	t.Parallel()
@@ -36,12 +54,7 @@ func TestResolveAllConfigsMountsExistingConfigReadWrite(t *testing.T) {
 		}
 	}
 
-	exists := func(path string) bool {
-		_, err := os.Stat(path)
-		return err == nil
-	}
-
-	report := ResolveAllConfigsReport(home, exists)
+	report := resolveConfigs(home, nil)
 	defaultConfigs := report.Mounts
 	defaultNames := make(map[string]struct{}, len(defaultConfigs))
 	for _, mount := range defaultConfigs {
@@ -62,18 +75,18 @@ func TestResolveAllConfigsMountsExistingConfigReadWrite(t *testing.T) {
 	}
 
 	missingHome := t.TempDir()
-	if got := ResolveAllConfigsReport(missingHome, exists).Mounts; len(got) != 0 {
-		t.Errorf("ResolveAllConfigsReport() with no local configs = %v, want none", got)
+	if got := resolveConfigs(missingHome, nil).Mounts; len(got) != 0 {
+		t.Errorf("Resolve() with no local configs = %v, want none", got)
 	}
 }
 
 func TestConfigOverrideCannotMountHomeDirectory(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CODEX_HOME", home)
-	report := ResolveAllConfigsReport(home, nil)
+	report := resolveConfigs(home, fakeEnv{"CODEX_HOME": home})
 	for _, mount := range report.Mounts {
 		if filepath.Clean(mount.HostPath) == filepath.Clean(home) {
 			t.Fatal("agent config override mounted the entire home directory")
@@ -91,17 +104,15 @@ func TestConfigOverrideCannotMountHomeDirectory(t *testing.T) {
 }
 
 func TestConfigSymlinkOutsideHomeIsRefused(t *testing.T) {
+	t.Parallel()
 	home, outside := t.TempDir(), t.TempDir()
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("CODEX_HOME", "")
-	t.Setenv("COPILOT_HOME", "")
 	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("no"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, filepath.Join(home, ".codex")); err != nil {
 		t.Fatal(err)
 	}
-	report := ResolveAllConfigsReport(home, nil)
+	report := resolveConfigs(home, nil)
 	for _, mount := range report.Mounts {
 		if filepath.Clean(mount.HostPath) == filepath.Clean(outside) {
 			t.Fatalf("mounted config symlink target outside home: %+v", mount)
@@ -113,6 +124,7 @@ func TestConfigSymlinkOutsideHomeIsRefused(t *testing.T) {
 }
 
 func TestConfigSymlinkOutsideConfigDirectoryIsRefused(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	configDir := filepath.Join(home, ".codex")
 	privateDir := filepath.Join(home, "private")
@@ -128,10 +140,7 @@ func TestConfigSymlinkOutsideConfigDirectoryIsRefused(t *testing.T) {
 	if err := os.Symlink(privateDir, filepath.Join(configDir, "private-link")); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("CODEX_HOME", "")
-	t.Setenv("COPILOT_HOME", "")
-	report := ResolveAllConfigsReport(home, nil)
+	report := resolveConfigs(home, nil)
 	for _, mount := range report.Mounts {
 		if mount.Name == ".codex" {
 			t.Fatal("config tree with a symlink outside the config directory was mounted")
@@ -143,6 +152,7 @@ func TestConfigSymlinkOutsideConfigDirectoryIsRefused(t *testing.T) {
 }
 
 func TestSpecialFileInsideConfigTreeIsRefused(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	configDir := filepath.Join(home, ".gemini")
 	if err := os.Mkdir(configDir, 0o700); err != nil {
@@ -151,10 +161,7 @@ func TestSpecialFileInsideConfigTreeIsRefused(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(configDir, "agent.pipe"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("CODEX_HOME", "")
-	t.Setenv("COPILOT_HOME", "")
-	report := ResolveAllConfigsReport(home, nil)
+	report := resolveConfigs(home, nil)
 	for _, mount := range report.Mounts {
 		if mount.Name == ".gemini" {
 			t.Fatal("config tree containing a socket was mounted")
@@ -166,6 +173,7 @@ func TestSpecialFileInsideConfigTreeIsRefused(t *testing.T) {
 }
 
 func TestCodexHomeMountPreservesDirectoryAndMasksRuntimeEntries(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	codexHome := filepath.Join(home, ".codex")
 	for _, dir := range []string{"app-server-control", "app-server-daemon", "ipc", "packages/app-server-daemon", "tmp/arg0"} {
@@ -187,11 +195,8 @@ func TestCodexHomeMountPreservesDirectoryAndMasksRuntimeEntries(t *testing.T) {
 	if err := os.Symlink("/opt/homebrew/bin/codex", filepath.Join(codexHome, "packages/app-server-daemon/current")); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("CODEX_HOME", "")
-	t.Setenv("COPILOT_HOME", "")
-	report := ResolveAllConfigsReport(home, nil)
-	var codexMount *ResolvedMount
+	report := resolveConfigs(home, nil)
+	var codexMount *plan.ConfigMount
 	for _, mount := range report.Mounts {
 		if mount.Agent == "codex" {
 			codexMount = &mount
@@ -218,11 +223,12 @@ func TestCodexHomeMountPreservesDirectoryAndMasksRuntimeEntries(t *testing.T) {
 }
 
 func TestSharedGitConfigMustBeRegularFile(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if err := os.Mkdir(filepath.Join(home, ".gitconfig"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	report := ResolveAllConfigsReport(home, nil)
+	report := resolveConfigs(home, nil)
 	for _, mount := range report.Mounts {
 		if mount.Name == ".gitconfig" {
 			t.Fatal("directory mounted as shared git config")

@@ -1,0 +1,179 @@
+package app
+
+import (
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/JeremyOrr4/caged/internal/agent"
+	"github.com/JeremyOrr4/caged/internal/plan"
+)
+
+// fakeEnv is a fixed process environment.
+type fakeEnv struct {
+	vars    map[string]string
+	home    string
+	homeErr error
+	wd      string
+	wdErr   error
+}
+
+func (e *fakeEnv) LookupEnv(key string) (string, bool) {
+	value, ok := e.vars[key]
+	return value, ok
+}
+func (e *fakeEnv) UserHomeDir() (string, error) { return e.home, e.homeErr }
+func (e *fakeEnv) Getwd() (string, error)       { return e.wd, e.wdErr }
+
+// fakeProject records the arguments it was asked to resolve.
+type fakeProject struct {
+	gotWorkDir, gotHome string
+	gotAllow            bool
+	err                 error
+}
+
+func (f *fakeProject) Resolve(workDir, home string, allowBroadMount bool) (*plan.Mount, error) {
+	f.gotWorkDir, f.gotHome, f.gotAllow = workDir, home, allowBroadMount
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &plan.Mount{HostPath: workDir, ContainerPath: "/workspace/app"}, nil
+}
+
+// fakeConfigs returns a fixed report.
+type fakeConfigs struct {
+	report  plan.ConfigReport
+	gotHome string
+}
+
+func (f *fakeConfigs) Resolve(home string) plan.ConfigReport {
+	f.gotHome = home
+	return f.report
+}
+
+func lookup(t *testing.T, name string) *agent.Agent {
+	t.Helper()
+	definition, err := agent.Builtin().Lookup(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &definition
+}
+
+func TestPlannerCombinesMountsConfigsAndEnv(t *testing.T) {
+	t.Parallel()
+
+	env := &fakeEnv{vars: map[string]string{"ANTHROPIC_API_KEY": "secret", "EXTRA": ""}, home: "/Users/dev", wd: "/Users/dev/app"}
+	project := &fakeProject{}
+	configs := &fakeConfigs{report: plan.ConfigReport{
+		Mounts:  []plan.ConfigMount{{Agent: "claude", Name: ".claude", HostPath: "/Users/dev/.claude", DestPath: "/home/caged/.claude", Writable: true}},
+		Missing: []string{"/Users/dev/.codex"},
+		Refused: []string{"/Users/dev/.pi (resolves outside home)"},
+	}}
+	var stderr strings.Builder
+	prompt := "hello"
+	spec, err := NewPlanner(env, project, configs, &stderr).Plan(Request{
+		Agent: lookup(t, "claude"), Prompt: &prompt, Verbose: true, AllowBroadMount: true, EnvVars: []string{"EXTRA", "MISSING"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := plan.RunSpec{
+		Image:         "caged-runtime:latest",
+		Command:       []string{"claude", "hello"},
+		Mount:         &plan.Mount{HostPath: "/Users/dev/app", ContainerPath: "/workspace/app"},
+		ConfigMounts:  configs.report.Mounts,
+		EnvVars:       []string{"ANTHROPIC_API_KEY", "EXTRA"},
+		ReturnToShell: true,
+	}
+	if !reflect.DeepEqual(spec, want) {
+		t.Fatalf("Plan() = %+v, want %+v", spec, want)
+	}
+	if project.gotWorkDir != "/Users/dev/app" || project.gotHome != "/Users/dev" || !project.gotAllow || configs.gotHome != "/Users/dev" {
+		t.Fatalf("resolvers got project %+v, configs home %q", project, configs.gotHome)
+	}
+	wantLog := `WARNING: allowlisted agent credentials are available inside the container.
+config: pass /Users/dev/.claude -> /home/caged/.claude
+config: missing /Users/dev/.codex
+config: refused /Users/dev/.pi (resolves outside home)
+env: pass ANTHROPIC_API_KEY
+env: pass EXTRA
+env: skipped MISSING (unset or disallowed)
+`
+	if stderr.String() != wantLog {
+		t.Fatalf("stderr = %q, want %q", stderr.String(), wantLog)
+	}
+}
+
+func TestPlannerUsesWorkDirFlagWithoutReadingCwd(t *testing.T) {
+	t.Parallel()
+
+	project := &fakeProject{}
+	env := &fakeEnv{home: "/home/dev", wdErr: errors.New("cwd must not be read")}
+	if _, err := NewPlanner(env, project, &fakeConfigs{}, &strings.Builder{}).Plan(Request{WorkDir: "../other", NoConfig: true}); err != nil {
+		t.Fatal(err)
+	}
+	if project.gotWorkDir != "../other" {
+		t.Fatalf("project resolver got %q, want the --workdir value", project.gotWorkDir)
+	}
+}
+
+func TestNoMountAndWorkdirAreIncompatible(t *testing.T) {
+	t.Parallel()
+
+	request := Request{NoMount: true, WorkDir: "/tmp"}
+	_, err := NewPlanner(&fakeEnv{}, &fakeProject{}, &fakeConfigs{}, &strings.Builder{}).Plan(request)
+	if err == nil || !strings.Contains(err.Error(), "cannot be used with --no-mount") {
+		t.Fatalf("Plan() error = %v, want incompatible-flags error", err)
+	}
+}
+
+func TestPlannerNoMountNoConfigNeedsNoHomeOrCwd(t *testing.T) {
+	t.Parallel()
+
+	env := &fakeEnv{homeErr: errors.New("no home"), wdErr: errors.New("no cwd")}
+	var stderr strings.Builder
+	spec, err := NewPlanner(env, &fakeProject{}, &fakeConfigs{}, &stderr).Plan(Request{NoMount: true, NoConfig: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Mount != nil || spec.ConfigMounts != nil || !reflect.DeepEqual(spec.Command, []string{"bash"}) || spec.ReturnToShell {
+		t.Fatalf("Plan() = %+v, want a bare shell", spec)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no credentials warning with --no-config", stderr.String())
+	}
+}
+
+func TestPlannerErrors(t *testing.T) {
+	t.Parallel()
+
+	prompt := "hello"
+	tests := []struct {
+		name    string
+		env     *fakeEnv
+		project *fakeProject
+		request Request
+		want    string
+	}{
+		{name: "cwd", env: &fakeEnv{wdErr: errors.New("gone")}, request: Request{NoConfig: true}, want: "get current working directory: gone"},
+		{name: "home for project", env: &fakeEnv{wd: "/w", homeErr: errors.New("unset")}, request: Request{NoConfig: true}, want: "find home directory: unset"},
+		{name: "home for config", env: &fakeEnv{homeErr: errors.New("unset")}, request: Request{NoMount: true}, want: "find home directory: unset"},
+		{name: "project", env: &fakeEnv{wd: "/w"}, project: &fakeProject{err: errors.New("refusing")}, request: Request{NoConfig: true}, want: "refusing"},
+		{name: "prompt without agent", env: &fakeEnv{}, request: Request{Prompt: &prompt, NoMount: true, NoConfig: true}, want: "a prompt requires an agent"},
+		{name: "agent without prompt support", env: &fakeEnv{}, request: Request{Agent: lookup(t, "gh"), Prompt: &prompt, NoMount: true, NoConfig: true}, want: "gh does not support prompt launch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			project := tt.project
+			if project == nil {
+				project = &fakeProject{}
+			}
+			if _, err := NewPlanner(tt.env, project, &fakeConfigs{}, &strings.Builder{}).Plan(tt.request); err == nil || err.Error() != tt.want {
+				t.Fatalf("Plan() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}

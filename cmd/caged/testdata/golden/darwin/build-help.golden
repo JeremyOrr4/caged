@@ -1,0 +1,15 @@
+args: ["build" "--help"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+Build the runtime image
+
+Usage:
+  caged build [flags]
+
+Flags:
+  -h, --help       help for build
+      --no-cache   build without using the Docker cache
+=== stderr
+=== docker invocations

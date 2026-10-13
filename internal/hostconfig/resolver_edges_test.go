@@ -1,0 +1,264 @@
+package hostconfig
+
+import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/JeremyOrr4/caged/internal/agent"
+	"github.com/JeremyOrr4/caged/internal/plan"
+	"github.com/JeremyOrr4/caged/internal/system"
+)
+
+// faultyFS is the real filesystem with selected calls failing.
+type faultyFS struct {
+	system.FS
+	evalErr    map[string]bool
+	lstatErr   map[string]bool
+	readDirErr map[string]bool
+}
+
+var errInjected = errors.New("injected failure")
+
+func (f faultyFS) EvalSymlinks(path string) (string, error) {
+	if f.evalErr[path] {
+		return "", errInjected
+	}
+	return f.FS.EvalSymlinks(path)
+}
+
+func (f faultyFS) Lstat(name string) (fs.FileInfo, error) {
+	if f.lstatErr[name] {
+		return nil, errInjected
+	}
+	return f.FS.Lstat(name)
+}
+
+func (f faultyFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if f.readDirErr[name] {
+		return nil, errInjected
+	}
+	return f.FS.ReadDir(name)
+}
+
+// testHome creates a home directory and returns it with its resolved path
+// (they differ on macOS, where temp dirs live behind the /var -> /private/var symlink).
+func testHome(t *testing.T, dirs, files []string) (string, string) {
+	t.Helper()
+	home := t.TempDir()
+	for _, dir := range dirs {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range files {
+		if err := os.WriteFile(filepath.Join(home, file), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return home, resolved
+}
+
+func TestResolveRefusesUnresolvableHome(t *testing.T) {
+	t.Parallel()
+
+	fsys := faultyFS{evalErr: map[string]bool{"/no/such/home": true}}
+	got := NewResolver(fsys, fakeEnv{}, agent.Builtin().All(), DefaultSharedFiles()).Resolve("/no/such/home/")
+	want := plan.ConfigReport{Refused: []string{"/no/such/home (home cannot be resolved)"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Resolve() = %+v, want %+v", got, want)
+	}
+}
+
+func TestResolveReportsMissingPathsInRegistryOrder(t *testing.T) {
+	t.Parallel()
+
+	// The six original agents, so that adding a built-in agent does not change this list.
+	var agents []agent.Agent
+	for _, name := range []string{"claude", "codex", "copilot", "gemini", "gh", "pi"} {
+		definition, err := agent.Builtin().Lookup(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		agents = append(agents, definition)
+	}
+	home, _ := testHome(t, nil, nil)
+	report := NewResolver(system.FS{}, fakeEnv{}, agents, DefaultSharedFiles()).Resolve(home)
+	var want []string
+	for _, rel := range []string{".claude", ".codex", ".copilot", ".gemini", ".config/gh", ".config/pi", ".pi", ".gitconfig"} {
+		want = append(want, filepath.Join(home, rel))
+	}
+	if !reflect.DeepEqual(report.Missing, want) || report.Mounts != nil || report.Refused != nil {
+		t.Fatalf("Resolve() = %+v, want only Missing %v", report, want)
+	}
+}
+
+func TestResolveHonorsOverrides(t *testing.T) {
+	t.Parallel()
+
+	home, resolvedHome := testHome(t, []string{"alt-codex", "abs-copilot", ".claude"}, nil)
+	report := resolveConfigs(home, fakeEnv{
+		"CODEX_HOME":        "alt-codex",                        // relative to home
+		"COPILOT_HOME":      filepath.Join(home, "abs-copilot"), // absolute
+		"CLAUDE_CONFIG_DIR": "",                                 // empty means "use the default"
+	})
+	got := map[string]string{}
+	for _, mount := range report.Mounts {
+		got[mount.HostPath] = mount.DestPath
+	}
+	want := map[string]string{
+		filepath.Join(resolvedHome, "alt-codex"):   "/home/caged/.codex",
+		filepath.Join(resolvedHome, "abs-copilot"): "/home/caged/.copilot",
+		filepath.Join(resolvedHome, ".claude"):     "/home/caged/.claude",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mounts = %v, want %v", got, want)
+	}
+}
+
+func TestResolveRefusesUnresolvableConfigPath(t *testing.T) {
+	t.Parallel()
+
+	home, _ := testHome(t, []string{".gemini"}, nil)
+	gemini := filepath.Join(home, ".gemini")
+	fsys := faultyFS{evalErr: map[string]bool{gemini: true}}
+	report := NewResolver(fsys, fakeEnv{}, agent.Builtin().All(), nil).Resolve(home)
+	if want := []string{gemini + " (unresolvable symlink)"}; !reflect.DeepEqual(report.Refused, want) {
+		t.Fatalf("Refused = %v, want %v", report.Refused, want)
+	}
+}
+
+func TestResolveReportsUninspectableEntries(t *testing.T) {
+	t.Parallel()
+
+	home, resolvedHome := testHome(t, []string{".gemini/sub", ".gh"}, []string{".gemini/sub/a.json", ".gemini/b.json"})
+	if err := os.Symlink("b.json", filepath.Join(home, ".gemini", "link")); err != nil {
+		t.Fatal(err)
+	}
+	gemini := filepath.Join(resolvedHome, ".gemini")
+	fsys := faultyFS{
+		readDirErr: map[string]bool{filepath.Join(gemini, "sub"): true},
+		lstatErr:   map[string]bool{filepath.Join(gemini, "b.json"): true},
+	}
+	report := NewResolver(fsys, fakeEnv{}, agent.Builtin().All(), nil).Resolve(home)
+	wantRefused := []string{
+		filepath.Join(gemini, "b.json") + " (cannot inspect config entry safely)",
+		filepath.Join(gemini, "link") + " (symlinks and special files are excluded from config mounts)",
+		filepath.Join(gemini, "sub") + " (cannot inspect config entry safely)",
+	}
+	if !reflect.DeepEqual(report.Refused, wantRefused) || len(report.Mounts) != 0 {
+		t.Fatalf("Resolve() = %+v, want refused %v and no mounts", report, wantRefused)
+	}
+
+	root := filepath.Join(resolvedHome, ".gh")
+	if mounts, refused := collectSafeMounts(faultyFS{lstatErr: map[string]bool{root: true}}, root); mounts != nil || !reflect.DeepEqual(refused, []string{root + " (cannot inspect config root safely)"}) {
+		t.Fatalf("collectSafeMounts() = %v, %v", mounts, refused)
+	}
+}
+
+func TestResolveMountsSingleFileConfigAndRejectsBadMasks(t *testing.T) {
+	t.Parallel()
+
+	home, resolvedHome := testHome(t, []string{"masked"}, []string{"tool.json", "masked-file"})
+	agents := []agent.Agent{
+		{Name: "file", Command: []string{"file"}, ConfigPaths: []agent.ConfigPath{{HostPath: "tool.json", ContainerPath: "tool.json"}}},
+		{Name: "escape", Command: []string{"escape"}, ConfigPaths: []agent.ConfigPath{{HostPath: "masked", ContainerPath: "masked", MaskPaths: []string{"../outside"}}}},
+		{Name: "notdir", Command: []string{"notdir"}, ConfigPaths: []agent.ConfigPath{{HostPath: "masked-file", ContainerPath: "masked-file", MaskPaths: []string{"tmp"}}}},
+	}
+	report := NewResolver(system.FS{}, fakeEnv{}, agents, nil).Resolve(home)
+	wantMounts := []plan.ConfigMount{{Agent: "file", Name: "tool.json", HostPath: filepath.Join(resolvedHome, "tool.json"), DestPath: "/home/caged/tool.json"}}
+	if !reflect.DeepEqual(report.Mounts, wantMounts) {
+		t.Fatalf("Mounts = %+v, want %+v", report.Mounts, wantMounts)
+	}
+	wantRefused := []string{
+		filepath.Join(home, "masked") + ` (invalid config mask path "../outside")`,
+		filepath.Join(home, "masked-file") + " (masked config root must be a directory)",
+	}
+	if !reflect.DeepEqual(report.Refused, wantRefused) {
+		t.Fatalf("Refused = %v, want %v", report.Refused, wantRefused)
+	}
+}
+
+func TestResolveDeduplicatesSharedConfigPaths(t *testing.T) {
+	t.Parallel()
+
+	home, _ := testHome(t, []string{".shared"}, nil)
+	path := agent.ConfigPath{HostPath: ".shared", ContainerPath: ".shared", Writable: true}
+	agents := []agent.Agent{
+		{Name: "one", Command: []string{"one"}, ConfigPaths: []agent.ConfigPath{path}},
+		{Name: "two", Command: []string{"two"}, ConfigPaths: []agent.ConfigPath{path}},
+	}
+	report := NewResolver(system.FS{}, fakeEnv{}, agents, nil).Resolve(home)
+	if len(report.Mounts) != 1 || report.Mounts[0].Agent != "one" {
+		t.Fatalf("Mounts = %+v, want one mount owned by the first agent", report.Mounts)
+	}
+}
+
+func TestSharedFilesAreData(t *testing.T) {
+	t.Parallel()
+
+	if got, want := DefaultSharedFiles(), []SharedFile{{Path: ".gitconfig", Description: "shared git config"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("DefaultSharedFiles() = %v, want %v", got, want)
+	}
+
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	home, resolvedHome := testHome(t, []string{".npmrc-dir"}, []string{".npmrc"})
+	if err := os.Symlink(filepath.Join(outside, "secret"), filepath.Join(home, ".escape")); err != nil {
+		t.Fatal(err)
+	}
+	shared := []SharedFile{
+		{Path: ".npmrc", Description: "shared npm config"},
+		{Path: ".npmrc-dir", Description: "shared npm config"},
+		{Path: ".escape", Description: "shared escape"},
+		{Path: ".absent", Description: "shared absent"},
+	}
+	report := NewResolver(system.FS{}, fakeEnv{}, nil, shared).Resolve(home)
+	wantMounts := []plan.ConfigMount{{Agent: "shared", Name: ".npmrc", HostPath: filepath.Join(resolvedHome, ".npmrc"), DestPath: "/home/caged/.npmrc"}}
+	if !reflect.DeepEqual(report.Mounts, wantMounts) {
+		t.Fatalf("Mounts = %+v, want %+v", report.Mounts, wantMounts)
+	}
+	wantRefused := []string{
+		filepath.Join(home, ".npmrc-dir") + " (shared npm config must be a regular file)",
+		filepath.Join(home, ".escape") + " (resolves outside home or cannot be resolved)",
+	}
+	if !reflect.DeepEqual(report.Refused, wantRefused) {
+		t.Fatalf("Refused = %v, want %v", report.Refused, wantRefused)
+	}
+	if want := []string{filepath.Join(home, ".absent")}; !reflect.DeepEqual(report.Missing, want) {
+		t.Fatalf("Missing = %v, want %v", report.Missing, want)
+	}
+}
+
+func TestIsWithin(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		path, root string
+		want       bool
+	}{
+		{"/Users/me", "/Users/me", true},
+		{"/Users/me/.codex", "/Users/me", true},
+		{"/Users/me/../other", "/Users/me", false},
+		{"/Users/meow", "/Users/me", false},
+		{"/Users", "/Users/me", false},
+		{"/Users/me/..hidden", "/Users/me", true},
+	} {
+		if got := isWithin(tt.path, tt.root); got != tt.want {
+			t.Errorf("isWithin(%q, %q) = %v, want %v", tt.path, tt.root, got, tt.want)
+		}
+	}
+	if strings.Contains(containerHome, "\\") {
+		t.Fatal("container paths must use forward slashes")
+	}
+}

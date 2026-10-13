@@ -1,0 +1,26 @@
+args: ["--allow-broad-mount" "-w" "$ROOT/home" "--no-config"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+fake docker run output
+=== stderr
+=== docker invocations
+image
+inspect
+caged-runtime:latest
+---
+info
+--format
+{{.ServerVersion}}
+---
+run
+-it
+--rm
+-v
+$ROOT/home:/workspace/home
+-w
+/workspace/home
+caged-runtime:latest
+bash
+---

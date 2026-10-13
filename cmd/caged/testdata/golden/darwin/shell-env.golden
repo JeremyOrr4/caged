@@ -1,0 +1,30 @@
+args: ["--env" "CAGED_GOLDEN_SET" "--env" "CAGED_GOLDEN_UNSET" "--verbose" "--no-config"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+fake docker run output
+=== stderr
+env: pass CAGED_GOLDEN_SET
+env: skipped CAGED_GOLDEN_UNSET (unset or disallowed)
+=== docker invocations
+image
+inspect
+caged-runtime:latest
+---
+info
+--format
+{{.ServerVersion}}
+---
+run
+-it
+--rm
+-v
+$ROOT/work/project:/workspace/project
+-w
+/workspace/project
+-e
+CAGED_GOLDEN_SET
+caged-runtime:latest
+bash
+---

@@ -1,0 +1,8 @@
+args: ["aider"]
+exit code: 1
+error: unsupported agent "aider"; supported agents: claude, codex, copilot, gemini, gh, pi
+leftover temp entries: 0
+=== stdout
+=== stderr
+unsupported agent "aider"; supported agents: claude, codex, copilot, gemini, gh, pi
+=== docker invocations

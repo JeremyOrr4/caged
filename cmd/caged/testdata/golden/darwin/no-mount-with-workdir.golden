@@ -1,0 +1,13 @@
+args: ["--no-mount" "-w" "$ROOT/work/other"]
+exit code: 1
+error: --workdir cannot be used with --no-mount
+leftover temp entries: 0
+=== stdout
+=== stderr
+WARNING: allowlisted agent credentials are available inside the container.
+--workdir cannot be used with --no-mount
+=== docker invocations
+image
+inspect
+caged-runtime:latest
+---

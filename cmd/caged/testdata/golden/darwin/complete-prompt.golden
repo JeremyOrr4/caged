@@ -1,0 +1,9 @@
+args: ["__complete" "claude" ""]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+:4
+=== stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+=== docker invocations

@@ -1,0 +1,25 @@
+args: ["build" "--no-cache"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+fake docker build output
+built runtime image caged-runtime:latest
+=== stderr
+=== docker invocations
+info
+--format
+{{.ServerVersion}}
+---
+build
+-t
+caged-runtime:latest
+--no-cache
+-f
+$ROOT/tmp/caged-runtime-N/Dockerfile
+$ROOT/tmp/caged-runtime-N
+---
+build context Dockerfile: 2970434799 5025
+build context caged-entrypoint.sh: 848039441 211
+build context entrypoint is executable
+---

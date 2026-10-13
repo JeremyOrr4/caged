@@ -1,13 +1,13 @@
+// Package agent defines the supported agent CLIs as data and keeps them in a Registry.
 package agent
 
 import (
 	"fmt"
-	"os"
-	"regexp"
-	"sort"
 	"strings"
 )
 
+// ConfigPath is a host config path, relative to the home directory, that is
+// mounted at the same relative path under the container home.
 type ConfigPath struct {
 	HostPath      string
 	ContainerPath string
@@ -16,6 +16,7 @@ type ConfigPath struct {
 	MaskPaths     []string
 }
 
+// PromptStyle says how an agent accepts an initial prompt on its command line.
 type PromptStyle int
 
 const (
@@ -24,6 +25,7 @@ const (
 	PromptFlag
 )
 
+// Agent is the complete, data-only definition of a supported agent CLI.
 type Agent struct {
 	Name        string
 	Command     []string
@@ -43,95 +45,56 @@ type AuthStrategy struct {
 	SupportsDeviceLogin bool
 }
 
-var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-var registry = map[string]Agent{
-	"pi": {
-		Name:        "pi",
-		Command:     []string{"pi"},
-		Description: "Pi coding agent",
-		ConfigPaths: []ConfigPath{
-			{HostPath: ".config/pi", ContainerPath: ".config/pi", Writable: true},
-			{HostPath: ".pi", ContainerPath: ".pi", Writable: true},
-		},
-		Prompt: PromptPositional,
-		Auth:   AuthStrategy{Environment: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"}},
-	},
-	"claude": {
-		Name:        "claude",
-		Command:     []string{"claude"},
-		Description: "Claude Code",
-		ConfigPaths: []ConfigPath{
-			{HostPath: ".claude", ContainerPath: ".claude", Writable: true, EnvOverride: "CLAUDE_CONFIG_DIR"},
-		},
-		Prompt: PromptPositional,
-		Auth:   AuthStrategy{Environment: []string{"ANTHROPIC_API_KEY"}, CredentialPaths: []string{".claude/.credentials.json"}},
-	},
-	"codex": {
-		Name:        "codex",
-		Command:     []string{"codex"},
-		Description: "Codex CLI",
-		ConfigPaths: []ConfigPath{
-			{
-				HostPath:      ".codex",
-				ContainerPath: ".codex",
-				Writable:      true,
-				EnvOverride:   "CODEX_HOME",
-				MaskPaths:     []string{"app-server-control", "app-server-daemon", "ipc", "packages/app-server-daemon", "tmp/arg0"},
-			},
-		},
-		Prompt: PromptFlag, PromptFlag: "exec",
-		Auth: AuthStrategy{Environment: []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"}, CredentialPaths: []string{".codex/auth.json"}, SupportsDeviceLogin: true},
-	},
-	"gemini": {
-		Name:        "gemini",
-		Command:     []string{"gemini"},
-		Description: "Gemini CLI",
-		ConfigPaths: []ConfigPath{
-			{HostPath: ".gemini", ContainerPath: ".gemini", Writable: true},
-		},
-		Prompt: PromptFlag, PromptFlag: "-i",
-		Auth: AuthStrategy{Environment: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}, CredentialPaths: []string{".gemini/oauth_creds.json"}},
-	},
-	"gh": {
-		Name:        "gh",
-		Command:     []string{"gh"},
-		Description: "GitHub CLI",
-		ConfigPaths: []ConfigPath{
-			{HostPath: ".config/gh", ContainerPath: ".config/gh", Writable: true},
-		},
-		Auth: AuthStrategy{Environment: []string{"GH_TOKEN", "GITHUB_TOKEN"}, CredentialPaths: []string{".config/gh/hosts.yml"}},
-	},
-	"copilot": {
-		Name:        "copilot",
-		Command:     []string{"copilot"},
-		Description: "GitHub Copilot CLI",
-		ConfigPaths: []ConfigPath{
-			{HostPath: ".copilot", ContainerPath: ".copilot", Writable: true, EnvOverride: "COPILOT_HOME"},
-		},
-		Prompt: PromptFlag, PromptFlag: "-p",
-		Auth: AuthStrategy{Environment: []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}, CredentialPaths: []string{".copilot/"}, SupportsDeviceLogin: true},
-	},
+// LaunchCommand returns the container command that starts the agent. A
+// non-nil prompt is passed as exactly one argument in the agent's prompt style.
+func (a Agent) LaunchCommand(prompt *string) ([]string, error) {
+	command := append([]string(nil), a.Command...)
+	if prompt == nil {
+		return command, nil
+	}
+	switch a.Prompt {
+	case PromptPositional:
+		return append(command, *prompt), nil
+	case PromptFlag:
+		if a.PromptFlag == "" {
+			return nil, fmt.Errorf("%s prompt flag is not configured", a.Name)
+		}
+		return append(command, a.PromptFlag, *prompt), nil
+	default:
+		return nil, fmt.Errorf("%s does not support prompt launch", a.Name)
+	}
 }
 
+// ValidateEnvName rejects names that are not valid environment variable names.
 func ValidateEnvName(name string) error {
-	trimmed := strings.TrimSpace(name)
-	if !envNameRE.MatchString(trimmed) {
+	if !validEnvName(strings.TrimSpace(name)) {
 		return fmt.Errorf("invalid env name %q; must match ^[A-Za-z_][A-Za-z0-9_]*$", name)
 	}
 	return nil
 }
 
-func ResolveEnvVars(agent Agent, requested []string, lookup func(string) bool) []string {
-	if lookup == nil {
-		lookup = func(name string) bool {
-			_, ok := os.LookupEnv(name)
-			return ok
+// validEnvName reports whether name matches ^[A-Za-z_][A-Za-z0-9_]*$.
+func validEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r == '_', 'A' <= r && r <= 'Z', 'a' <= r && r <= 'z':
+		case i > 0 && '0' <= r && r <= '9':
+		default:
+			return false
 		}
 	}
-	allowed := make([]string, 0, len(agent.Auth.Environment)+len(requested))
-	for _, name := range EnvVarNames(agent, requested) {
-		if lookup(name) {
+	return true
+}
+
+// ResolveEnv returns the names from EnvNames that isSet reports as present in
+// the host environment, or nil when there are none.
+func (a Agent) ResolveEnv(requested []string, isSet func(string) bool) []string {
+	allowed := make([]string, 0, len(a.Auth.Environment)+len(requested))
+	for _, name := range a.EnvNames(requested) {
+		if isSet(name) {
 			allowed = append(allowed, name)
 		}
 	}
@@ -141,12 +104,14 @@ func ResolveEnvVars(agent Agent, requested []string, lookup func(string) bool) [
 	return allowed
 }
 
-func EnvVarNames(agent Agent, requested []string) []string {
-	seen := make(map[string]struct{}, len(agent.Auth.Environment)+len(requested))
-	names := make([]string, 0, len(agent.Auth.Environment)+len(requested))
-	for _, name := range append(append([]string{}, agent.Auth.Environment...), requested...) {
+// EnvNames returns the agent's default environment names followed by the
+// requested ones, trimmed, de-duplicated, and with invalid names dropped.
+func (a Agent) EnvNames(requested []string) []string {
+	seen := make(map[string]struct{}, len(a.Auth.Environment)+len(requested))
+	names := make([]string, 0, len(a.Auth.Environment)+len(requested))
+	for _, name := range append(append([]string{}, a.Auth.Environment...), requested...) {
 		name = strings.TrimSpace(name)
-		if name == "" || !envNameRE.MatchString(name) {
+		if !validEnvName(name) {
 			continue
 		}
 		if _, exists := seen[name]; exists {
@@ -158,21 +123,14 @@ func EnvVarNames(agent Agent, requested []string) []string {
 	return names
 }
 
-func Lookup(name string) (Agent, error) {
-	key := strings.TrimSpace(strings.ToLower(name))
-	if agent, ok := registry[key]; ok {
-		return agent, nil
+// clone returns a deep copy so callers can never modify a registered definition.
+func (a Agent) clone() Agent {
+	a.Command = append([]string(nil), a.Command...)
+	a.ConfigPaths = append([]ConfigPath(nil), a.ConfigPaths...)
+	for i := range a.ConfigPaths {
+		a.ConfigPaths[i].MaskPaths = append([]string(nil), a.ConfigPaths[i].MaskPaths...)
 	}
-
-	supported := Names()
-	return Agent{}, fmt.Errorf("unsupported agent %q; supported agents: %s", name, strings.Join(supported, ", "))
-}
-
-func Names() []string {
-	names := make([]string, 0, len(registry))
-	for name := range registry {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	a.Auth.Environment = append([]string(nil), a.Auth.Environment...)
+	a.Auth.CredentialPaths = append([]string(nil), a.Auth.CredentialPaths...)
+	return a
 }

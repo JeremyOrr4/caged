@@ -3,6 +3,7 @@ package plan
 
 import (
 	"fmt"
+	"io/fs"
 
 	"github.com/JeremyOrr4/caged/internal/agent"
 )
@@ -17,6 +18,14 @@ type ConfigMount struct {
 	MaskPaths                       []string
 }
 
+// ConfigReport is the outcome of host config discovery: the mounts to make,
+// the paths that do not exist, and the paths refused with their reasons.
+type ConfigReport struct {
+	Mounts  []ConfigMount
+	Missing []string
+	Refused []string
+}
+
 // RunSpec is an immutable-by-convention description consumed by a runtime adapter.
 type RunSpec struct {
 	Image         string
@@ -25,6 +34,22 @@ type RunSpec struct {
 	ConfigMounts  []ConfigMount
 	EnvVars       []string
 	ReturnToShell bool
+}
+
+// BuildSpec describes an image build from an in-memory build context.
+type BuildSpec struct {
+	Image      string // tag of the image to build
+	Dockerfile string // name of the Dockerfile inside Files
+	Files      []File // the build context, written in order
+	NoCache    bool
+}
+
+// File is one file of an image build context.
+type File struct {
+	Name  string // file name inside the build context
+	Label string // short name used in error messages
+	Data  []byte
+	Mode  fs.FileMode
 }
 
 // BuildRunSpec combines resolved inputs into a complete container invocation.
@@ -45,21 +70,11 @@ func BuildRunSpec(image string, selected *agent.Agent, prompt *string, projectMo
 		}
 		return spec, nil
 	}
-	spec.Command = append([]string(nil), selected.Command...)
+	command, err := selected.LaunchCommand(prompt)
+	if err != nil {
+		return RunSpec{}, err
+	}
+	spec.Command = command
 	spec.ReturnToShell = true
-	if prompt == nil {
-		return spec, nil
-	}
-	switch selected.Prompt {
-	case agent.PromptPositional:
-		spec.Command = append(spec.Command, *prompt)
-	case agent.PromptFlag:
-		if selected.PromptFlag == "" {
-			return RunSpec{}, fmt.Errorf("%s prompt flag is not configured", selected.Name)
-		}
-		spec.Command = append(spec.Command, selected.PromptFlag, *prompt)
-	default:
-		return RunSpec{}, fmt.Errorf("%s does not support prompt launch", selected.Name)
-	}
 	return spec, nil
 }

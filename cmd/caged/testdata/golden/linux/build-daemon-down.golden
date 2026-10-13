@@ -1,0 +1,12 @@
+args: ["build"]
+exit code: 1
+error: Docker is installed but the daemon is unavailable; start the Docker daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?
+leftover temp entries: 0
+=== stdout
+=== stderr
+Docker is installed but the daemon is unavailable; start the Docker daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?
+=== docker invocations
+info
+--format
+{{.ServerVersion}}
+---

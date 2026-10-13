@@ -1,8 +1,11 @@
 package runtime
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/JeremyOrr4/caged/internal/plan"
 )
 
 func TestEmbeddedDockerfileIsPresent(t *testing.T) {
@@ -112,5 +115,27 @@ func TestRuntimeIncludesGithubCLIAndPersistsItsConfigDirectory(t *testing.T) {
 		if !strings.Contains(dockerfile, expected) {
 			t.Errorf("runtime Dockerfile missing GitHub CLI setup %q", expected)
 		}
+	}
+}
+
+func TestBuildSpecDescribesEmbeddedBuildContext(t *testing.T) {
+	t.Parallel()
+
+	want := plan.BuildSpec{
+		Image:      "caged-runtime:latest",
+		Dockerfile: "Dockerfile",
+		NoCache:    true,
+		Files: []plan.File{
+			{Name: "Dockerfile", Label: "Dockerfile", Data: []byte(runtimeDockerfile), Mode: 0o644},
+			{Name: "caged-entrypoint.sh", Label: "entrypoint", Data: []byte(runtimeEntrypoint), Mode: 0o755},
+		},
+	}
+	got := BuildSpec(true)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("BuildSpec(true) = %+v, want %+v", got, want)
+	}
+	got.Files[0].Data[0] = 'X'
+	if BuildSpec(false).Files[0].Data[0] == 'X' || BuildSpec(false).NoCache {
+		t.Fatal("BuildSpec must return fresh data and honor noCache")
 	}
 }

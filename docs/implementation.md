@@ -36,7 +36,10 @@ make vet
 ```
 
 The development image is `dev/Dockerfile`; the runtime Dockerfile and entrypoint
-under `internal/runtime/` are embedded in the binary. Agent data, host-config
-resolution, project validation, run planning, Docker execution, and application
-coordination are separated into `internal/agent`, `internal/hostconfig`,
-`internal/project`, `internal/plan`, `internal/docker`, and `internal/app`.
+under `internal/runtime/` are embedded in the binary. Command-line parsing,
+agent data, host-config resolution, project validation, run planning, Docker
+execution, and application coordination are separated into `internal/cli`,
+`internal/agent`, `internal/hostconfig`, `internal/project`, `internal/plan`,
+`internal/docker`, and `internal/app`. Only `internal/system` touches the
+operating system, and `cmd/caged/main.go` wires everything together. See
+`docs/architecture.md` for the interfaces and the dependency rules.

@@ -70,4 +70,6 @@ make vet
 ```
 
 The development image uses [dev/Dockerfile](dev/Dockerfile); the embedded
-runtime image is defined in `internal/runtime/Dockerfile`.
+runtime image is defined in `internal/runtime/Dockerfile`. The package layout,
+the dependency rules, and how to add an agent are described in
+[docs/architecture.md](docs/architecture.md).

@@ -1,0 +1,8 @@
+args: ["list" "extra"]
+exit code: 1
+error: unknown command "extra" for "caged list"
+leftover temp entries: 0
+=== stdout
+=== stderr
+unknown command "extra" for "caged list"
+=== docker invocations

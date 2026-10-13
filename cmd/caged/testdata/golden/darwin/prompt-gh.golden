@@ -1,0 +1,13 @@
+args: ["gh" "hello $(world) \"quoted\" 'single'"]
+exit code: 1
+error: gh does not support prompt launch
+leftover temp entries: 0
+=== stdout
+=== stderr
+WARNING: allowlisted agent credentials are available inside the container.
+gh does not support prompt launch
+=== docker invocations
+image
+inspect
+caged-runtime:latest
+---

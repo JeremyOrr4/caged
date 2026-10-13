@@ -1,0 +1,8 @@
+args: ["claude" "one" "two"]
+exit code: 1
+error: accepts at most 2 arg(s), received 3
+leftover temp entries: 0
+=== stdout
+=== stderr
+accepts at most 2 arg(s), received 3
+=== docker invocations

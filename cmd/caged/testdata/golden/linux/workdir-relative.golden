@@ -1,0 +1,28 @@
+args: ["--workdir" "../other" "--no-config"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+fake docker run output
+=== stderr
+=== docker invocations
+image
+inspect
+caged-runtime:latest
+---
+info
+--format
+{{.ServerVersion}}
+---
+run
+-it
+--rm
+-v
+$ROOT/work/other:/workspace/other
+-w
+/workspace/other
+--user
+$UID:$GID
+caged-runtime:latest
+bash
+---

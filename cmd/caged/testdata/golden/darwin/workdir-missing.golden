@@ -1,0 +1,13 @@
+args: ["-w" "$ROOT/work/missing"]
+exit code: 1
+error: inspect working directory "$ROOT/work/missing": stat $ROOT/work/missing: no such file or directory
+leftover temp entries: 0
+=== stdout
+=== stderr
+WARNING: allowlisted agent credentials are available inside the container.
+inspect working directory "$ROOT/work/missing": stat $ROOT/work/missing: no such file or directory
+=== docker invocations
+image
+inspect
+caged-runtime:latest
+---

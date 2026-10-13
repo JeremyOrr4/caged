@@ -1,0 +1,14 @@
+args: ["help" "list"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+List supported AI agents
+
+Usage:
+  caged list [flags]
+
+Flags:
+  -h, --help   help for list
+=== stderr
+=== docker invocations

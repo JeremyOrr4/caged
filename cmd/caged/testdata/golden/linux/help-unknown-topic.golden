@@ -1,0 +1,30 @@
+args: ["help" "nope"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+Run a bash shell or a supported AI coding agent in a disposable Docker container
+
+Usage:
+  caged [agent [prompt]] [flags]
+  caged [command]
+
+Available Commands:
+  build       Build the runtime image
+  completion  Generate the autocompletion script for the specified shell
+  help        Help about any command
+  list        List supported AI agents
+
+Flags:
+      --allow-broad-mount   allow mounting the filesystem root or home directory
+      --env stringArray     pass a host environment variable into the container by NAME only
+  -h, --help                help for caged
+      --no-config           do not mount any host AI config into the container
+      --no-mount            do not mount the current working directory
+      --verbose             print which config files and environment names are passed
+  -v, --version             version for caged
+  -w, --workdir string      mount this host directory at /workspace/<folder-name>
+
+Use "caged [command] --help" for more information about a command.
+=== stderr
+=== docker invocations

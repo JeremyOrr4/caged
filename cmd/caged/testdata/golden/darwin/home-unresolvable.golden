@@ -1,0 +1,24 @@
+args: ["--verbose" "--no-mount"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+fake docker run output
+=== stderr
+WARNING: allowlisted agent credentials are available inside the container.
+config: refused $ROOT/missing-home (home cannot be resolved)
+=== docker invocations
+image
+inspect
+caged-runtime:latest
+---
+info
+--format
+{{.ServerVersion}}
+---
+run
+-it
+--rm
+caged-runtime:latest
+bash
+---

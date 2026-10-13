@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/JeremyOrr4/caged/internal/agent"
@@ -9,19 +10,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type runTarget struct {
-	kind  string
-	agent agent.Agent
+// Service runs and builds caged containers. app.Service implements it.
+type Service interface {
+	Run(ctx context.Context, request app.Request) error
+	Build(ctx context.Context, noCache bool) error
 }
 
-// NewRootCmd creates the root caged command.
-func NewRootCmd(version string) *cobra.Command {
-	var noMount bool
-	var workDir string
-	var noConfig bool
-	var verbose bool
-	var allowBroadMount bool
-	var envVars []string
+// Agents finds supported agents. agent.Registry implements it.
+type Agents interface {
+	Lookup(name string) (agent.Agent, error)
+	Names() []string
+}
+
+// NewRootCmd creates the root caged command. It only turns arguments and
+// flags into an app.Request; agents and service do the work.
+func NewRootCmd(version string, agents Agents, service Service) *cobra.Command {
+	var flags app.Request
 
 	cmd := &cobra.Command{
 		Use:           "caged [agent [prompt]]",
@@ -34,60 +38,54 @@ func NewRootCmd(version string) *cobra.Command {
 			if len(args) > 0 {
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
-			return agent.Names(), cobra.ShellCompDirectiveNoFileComp
+			return agents.Names(), cobra.ShellCompDirectiveNoFileComp
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := resolveTarget(args)
+			request, err := buildRequest(agents, flags, args)
 			if err != nil {
 				return err
 			}
-
-			for _, envName := range envVars {
-				if err := agent.ValidateEnvName(envName); err != nil {
-					return err
-				}
-			}
-			request := app.Request{NoMount: noMount, WorkDir: workDir, NoConfig: noConfig, Verbose: verbose, AllowBroadMount: allowBroadMount, EnvVars: envVars}
-			if len(args) == 2 {
-				prompt := args[1]
-				request.Prompt = &prompt
-			}
-			if target.kind == "agent" {
-				request.Agent = &target.agent
-			}
-			return app.DefaultService().Run(request)
+			return service.Run(cmd.Context(), request)
 		},
 	}
 
-	cmd.AddCommand(newBuildCmd())
-	cmd.AddCommand(newListCmd())
-	cmd.Flags().BoolVar(&noMount, "no-mount", false, "do not mount the current working directory")
-	cmd.Flags().StringVarP(&workDir, "workdir", "w", "", "mount this host directory at /workspace/<folder-name>")
-	cmd.Flags().BoolVar(&allowBroadMount, "allow-broad-mount", false, "allow mounting the filesystem root or home directory")
-	cmd.Flags().BoolVar(&noConfig, "no-config", false, "do not mount any host AI config into the container")
-	cmd.Flags().BoolVar(&verbose, "verbose", false, "print which config files and environment names are passed")
-	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass a host environment variable into the container by NAME only")
+	cmd.AddCommand(newBuildCmd(service))
+	cmd.AddCommand(newListCmd(agents))
+	cmd.Flags().BoolVar(&flags.NoMount, "no-mount", false, "do not mount the current working directory")
+	cmd.Flags().StringVarP(&flags.WorkDir, "workdir", "w", "", "mount this host directory at /workspace/<folder-name>")
+	cmd.Flags().BoolVar(&flags.AllowBroadMount, "allow-broad-mount", false, "allow mounting the filesystem root or home directory")
+	cmd.Flags().BoolVar(&flags.NoConfig, "no-config", false, "do not mount any host AI config into the container")
+	cmd.Flags().BoolVar(&flags.Verbose, "verbose", false, "print which config files and environment names are passed")
+	cmd.Flags().StringArrayVar(&flags.EnvVars, "env", nil, "pass a host environment variable into the container by NAME only")
 	cmd.Version = version
 	return cmd
 }
 
-func resolveTarget(args []string) (runTarget, error) {
-	if len(args) == 0 {
-		return runTarget{kind: "shell"}, nil
+// buildRequest adds the positional arguments to the parsed flags. No
+// argument means a shell, the first names an agent, and the second is its
+// prompt. Environment names are validated here, before anything runs.
+func buildRequest(agents Agents, flags app.Request, args []string) (app.Request, error) {
+	request := flags
+	if len(args) > 0 {
+		selected, err := agents.Lookup(args[0])
+		if err != nil {
+			return app.Request{}, err
+		}
+		request.Agent = &selected
 	}
-
-	agent, err := agent.Lookup(args[0])
-	if err != nil {
-		return runTarget{}, err
+	for _, name := range request.EnvVars {
+		if err := agent.ValidateEnvName(name); err != nil {
+			return app.Request{}, err
+		}
 	}
-	return runTarget{kind: "agent", agent: agent}, nil
+	if len(args) == 2 {
+		prompt := args[1]
+		request.Prompt = &prompt
+	}
+	return request, nil
 }
 
-func agentCommand(agent agent.Agent) []string {
-	return append([]string(nil), agent.Command...)
-}
-
-func newBuildCmd() *cobra.Command {
+func newBuildCmd(service Service) *cobra.Command {
 	var noCache bool
 	cmd := &cobra.Command{
 		Use:          "build",
@@ -95,7 +93,7 @@ func newBuildCmd() *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := app.DefaultService().Build(noCache); err != nil {
+			if err := service.Build(cmd.Context(), noCache); err != nil {
 				return err
 			}
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), "built runtime image", runtime.Image)
@@ -106,14 +104,14 @@ func newBuildCmd() *cobra.Command {
 	return cmd
 }
 
-func newListCmd() *cobra.Command {
+func newListCmd(agents Agents) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "list",
 		Short:        "List supported AI agents",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			for _, name := range agent.Names() {
+			for _, name := range agents.Names() {
 				if _, err := fmt.Fprintln(cmd.OutOrStdout(), name); err != nil {
 					return err
 				}
