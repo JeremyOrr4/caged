@@ -45,8 +45,11 @@ Because agent configs mount read-write, their settings and credentials are
 available in the container and changes persist on the host. On macOS, Claude
 Code's Keychain session is not forwarded. Subscription users log in once inside
 the container, creating a separate plaintext credential under the mounted
-config. Keychain extraction, ports, GitHub CLI, and non-Docker-Desktop runtimes
-are out of scope for v1. Claude Code's `CLAUDE_CONFIG_DIR` points to
+config. Codex mounts `~/.codex` as a directory so atomic config writes persist;
+container tmpfs mounts hide its host daemon and socket paths. GitHub CLI reads
+and writes `~/.config/gh`, with `GH_TOKEN` and `GITHUB_TOKEN` forwarded when set.
+Keychain extraction, ports, and non-Docker-Desktop runtimes are out of scope
+for v1. Claude Code's `CLAUDE_CONFIG_DIR` points to
 `/home/caged/.claude` so config writes stay inside the directory bind mount;
 the host's `~/.claude.json` is not shared because Docker Desktop cannot replace
 a mounted single file by rename.
@@ -54,6 +57,6 @@ a mounted single file by rename.
 ## Runtime image
 
 `internal/runtime` embeds the runtime Dockerfile and entrypoint. The image
-installs Claude Code, Pi, Codex, Gemini CLI, and GitHub Copilot CLI. It is built
+installs Claude Code, Pi, Codex, Gemini CLI, GitHub CLI (`gh`), and GitHub Copilot CLI. It is built
 on first use when absent. `caged build --no-cache` refreshes the latest
 installer versions. The development-only Dockerfile is `dev/Dockerfile`.

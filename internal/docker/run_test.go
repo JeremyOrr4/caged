@@ -213,3 +213,26 @@ func TestBuildArgsExposeOnlyPlannedMounts(t *testing.T) {
 		t.Fatalf("Docker args contain %d volume mounts, want only the %d planned mounts: %q", volumeCount, want, args)
 	}
 }
+
+func TestBuildArgsMaskCodexRuntimeDirectories(t *testing.T) {
+	t.Parallel()
+
+	options := Options{Image: runtime.Image, ConfigMounts: []plan.ConfigMount{{
+		HostPath: "/home/user/.codex", DestPath: "/home/caged/.codex", Writable: true,
+		MaskPaths: []string{"app-server-control", "ipc"},
+	}}}
+	args := buildArgs(options, "darwin", 0, 0)
+	want := []string{"--tmpfs", "/home/caged/.codex/app-server-control", "--tmpfs", "/home/caged/.codex/ipc"}
+	for i := 0; i < len(want); i += 2 {
+		found := false
+		for j := 0; j+1 < len(args); j++ {
+			if args[j] == want[i] && args[j+1] == want[i+1] {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Docker args do not contain %q %q: %q", want[i], want[i+1], args)
+		}
+	}
+}

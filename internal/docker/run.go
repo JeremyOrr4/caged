@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -63,6 +64,10 @@ func buildArgs(options Options, goos string, uid, gid int) []string {
 			volume += ":ro"
 		}
 		args = append(args, "-v", volume)
+		for _, mask := range mount.MaskPaths {
+			maskedPath := strings.TrimSuffix(mount.DestPath, "/") + "/" + strings.TrimPrefix(filepath.ToSlash(mask), "/")
+			args = append(args, "--tmpfs", maskedPath)
+		}
 	}
 	if goos == "linux" {
 		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))

@@ -100,3 +100,17 @@ func TestRuntimePiInstallDoesNotOverlapHostConfigMount(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeIncludesGithubCLIAndPersistsItsConfigDirectory(t *testing.T) {
+	t.Parallel()
+	dockerfile := string(runtimeDockerfile)
+	for _, expected := range []string{
+		"https://cli.github.com/packages/githubcli-archive-keyring.gpg",
+		"apt-get install -y --no-install-recommends gh",
+		"/home/caged/.config/gh",
+	} {
+		if !strings.Contains(dockerfile, expected) {
+			t.Errorf("runtime Dockerfile missing GitHub CLI setup %q", expected)
+		}
+	}
+}

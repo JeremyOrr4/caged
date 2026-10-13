@@ -3,6 +3,7 @@ package hostconfig
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -12,7 +13,7 @@ func TestResolveAllConfigsMountsExistingConfigReadWrite(t *testing.T) {
 	t.Parallel()
 
 	home := t.TempDir()
-	for _, dir := range []string{".claude", ".codex", ".gemini", ".pi/agent", ".config/pi"} {
+	for _, dir := range []string{".claude", ".codex", ".gemini", ".pi/agent", ".config/pi", ".config/gh"} {
 		if err := os.MkdirAll(filepath.Join(home, dir), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -27,6 +28,7 @@ func TestResolveAllConfigsMountsExistingConfigReadWrite(t *testing.T) {
 		".gemini/oauth_creds.json",
 		".pi/agent/settings.json",
 		".pi/agent/auth.json",
+		".config/gh/hosts.yml",
 		".gitconfig",
 	} {
 		if err := os.WriteFile(filepath.Join(home, file), []byte("test"), 0o600); err != nil {
@@ -45,7 +47,7 @@ func TestResolveAllConfigsMountsExistingConfigReadWrite(t *testing.T) {
 	for _, mount := range defaultConfigs {
 		defaultNames[mount.Name] = struct{}{}
 	}
-	for _, want := range []string{".claude", ".codex", ".gemini", ".pi", ".gitconfig"} {
+	for _, want := range []string{".claude", ".codex", ".gemini", ".pi", ".config/gh", ".gitconfig"} {
 		if _, ok := defaultNames[want]; !ok {
 			t.Errorf("default staged configs missing %q; got %v", want, defaultNames)
 		}
@@ -163,11 +165,13 @@ func TestSpecialFileInsideConfigTreeIsRefused(t *testing.T) {
 	}
 }
 
-func TestSafeCodexFilesRemainMountedWhenRuntimeEntriesAreExcluded(t *testing.T) {
+func TestCodexHomeMountPreservesDirectoryAndMasksRuntimeEntries(t *testing.T) {
 	home := t.TempDir()
 	codexHome := filepath.Join(home, ".codex")
-	if err := os.MkdirAll(filepath.Join(codexHome, "app-server-control"), 0o700); err != nil {
-		t.Fatal(err)
+	for _, dir := range []string{"app-server-control", "app-server-daemon", "ipc", "packages/app-server-daemon", "tmp/arg0"} {
+		if err := os.MkdirAll(filepath.Join(codexHome, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for name, contents := range map[string]string{
 		"auth.json":   "credentials",
@@ -180,28 +184,36 @@ func TestSafeCodexFilesRemainMountedWhenRuntimeEntriesAreExcluded(t *testing.T) 
 	if err := syscall.Mkfifo(filepath.Join(codexHome, "app-server-control", "daemon.sock"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink("/opt/homebrew/bin/codex", filepath.Join(codexHome, "packages/app-server-daemon/current")); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("COPILOT_HOME", "")
 	report := ResolveAllConfigsReport(home, nil)
-	got := map[string]bool{}
+	var codexMount *ResolvedMount
 	for _, mount := range report.Mounts {
 		if mount.Agent == "codex" {
-			got[filepath.Clean(mount.DestPath)] = true
+			codexMount = &mount
 		}
 	}
-	for _, destination := range []string{"/home/caged/.codex/auth.json", "/home/caged/.codex/config.toml"} {
-		if !got[destination] {
-			t.Errorf("safe Codex file %s was not mounted: %+v", destination, report.Mounts)
-		}
+	if codexMount == nil {
+		t.Fatalf("Codex home directory was not mounted: %+v", report)
 	}
-	for _, mount := range report.Mounts {
-		if strings.Contains(mount.HostPath, "daemon.sock") {
-			t.Fatalf("runtime socket was mounted: %+v", mount)
-		}
+	resolvedCodexHome, err := filepath.EvalSymlinks(codexHome)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(report.Refused) == 0 {
-		t.Fatal("excluded runtime socket was not reported")
+	if codexMount.HostPath != resolvedCodexHome || codexMount.DestPath != "/home/caged/.codex" {
+		t.Fatalf("Codex config was not mounted as one directory: %+v", codexMount)
+	}
+	if !reflect.DeepEqual(codexMount.MaskPaths, []string{"app-server-control", "app-server-daemon", "ipc", "packages/app-server-daemon", "tmp/arg0"}) {
+		t.Fatalf("Codex runtime mask paths = %v", codexMount.MaskPaths)
+	}
+	for _, refused := range report.Refused {
+		if strings.Contains(refused, codexHome) {
+			t.Fatalf("known masked Codex runtime entries were refused: %+v", report.Refused)
+		}
 	}
 }
 

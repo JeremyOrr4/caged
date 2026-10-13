@@ -1,7 +1,7 @@
 # Implementation notes
 
 The implementation provides one disposable Docker runtime for Claude Code,
-Codex, Gemini CLI, Pi, GitHub Copilot CLI, and an interactive shell. Its image is embedded into the
+Codex, Gemini CLI, Pi, GitHub CLI (`gh`), GitHub Copilot CLI, and an interactive shell. Its image is embedded into the
 Go executable and built locally on first launch.
 
 ## User behavior
@@ -12,8 +12,14 @@ Go executable and built locally on first launch.
 - After an agent exits, the container entrypoint opens an interactive shell.
 - Existing allowlisted CLI config paths are mounted read-write; shared
   `.gitconfig` is read-only. Absent paths are skipped. Config roots outside the home
-  directory, symlinks resolving outside it, and trees containing special files
-  are refused.
+  directory and unsafe symlinks are refused. Special files are excluded or
+  masked so they are never passed into the container.
+- Codex's home is one directory mount so config updates can use atomic file
+  replacement. Container tmpfs mounts hide its host daemon, socket, and runtime
+  executable symlink directories.
+- GitHub CLI uses the host's `~/.config/gh` directory and accepts `GH_TOKEN` or
+  `GITHUB_TOKEN` when those variables are set. Create the directory before the
+  first run if login needs to persist there.
 - `--no-config` disables those mounts. There is no `--no-auth`; credentials in
   an existing mounted config are part of the read-write config behavior.
 - Host environment values are passed by name only when set. Caged logs names,

@@ -14,6 +14,7 @@ type Mount struct{ HostPath, ContainerPath string }
 type ConfigMount struct {
 	Agent, Name, HostPath, DestPath string
 	Writable                        bool
+	MaskPaths                       []string
 }
 
 // RunSpec is an immutable-by-convention description consumed by a runtime adapter.
@@ -33,7 +34,11 @@ func BuildRunSpec(image string, selected *agent.Agent, prompt *string, projectMo
 		copied := *projectMount
 		mountCopy = &copied
 	}
-	spec := RunSpec{Image: image, Command: []string{"bash"}, Mount: mountCopy, ConfigMounts: append([]ConfigMount(nil), configMounts...), EnvVars: append([]string(nil), envVars...)}
+	configCopies := append([]ConfigMount(nil), configMounts...)
+	for i := range configCopies {
+		configCopies[i].MaskPaths = append([]string(nil), configCopies[i].MaskPaths...)
+	}
+	spec := RunSpec{Image: image, Command: []string{"bash"}, Mount: mountCopy, ConfigMounts: configCopies, EnvVars: append([]string(nil), envVars...)}
 	if selected == nil {
 		if prompt != nil {
 			return RunSpec{}, fmt.Errorf("a prompt requires an agent")

@@ -64,24 +64,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Install GitHub CLI from GitHub's signed package repository.
+RUN install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN useradd -m -d /home/caged -s /bin/bash caged \
-    && mkdir -p /workspace /home/caged/.config/pi /home/caged/.pi /home/caged/.claude \
+    && mkdir -p /workspace /home/caged/.config/pi /home/caged/.config/gh /home/caged/.pi /home/caged/.claude \
         /home/caged/.codex /home/caged/.gemini /home/caged/.copilot /home/caged/.cache \
-    && chmod 0777 /home/caged /home/caged/.config /home/caged/.config/pi /home/caged/.pi \
+    && chmod 0777 /home/caged /home/caged/.config /home/caged/.config/pi /home/caged/.config/gh /home/caged/.pi \
         /home/caged/.claude /home/caged/.codex /home/caged/.gemini /home/caged/.copilot \
     && chown caged:caged /home/caged/.cache \
     && git config --system --add safe.directory '/workspace/*' \
     && echo 'export PATH="/home/caged/.local/bin:/home/caged/.pi/agent/bin:$PATH"' >> /home/caged/.profile
 
 COPY --from=caged-build /home/caged/.local /home/caged/.local
-COPY --from=caged-build /home/caged/.codex /home/caged/.codex
+COPY --from=caged-build /home/caged/.codex/packages/standalone /opt/caged/codex-cli
 COPY --from=caged-build /opt/caged /opt/caged
 COPY --from=caged-build /usr/local/bin/codex /usr/local/bin/codex
 COPY --from=caged-build /usr/lib/node_modules/@google /usr/lib/node_modules/@google
 COPY --from=caged-build /usr/lib/node_modules/@github /usr/lib/node_modules/@github
 
 COPY ./caged-entrypoint.sh /usr/local/bin/caged-entrypoint
-RUN ln -sf /home/caged/.codex/packages/standalone/current/bin/codex /usr/local/bin/codex-real \
+RUN codex_release="$(find /opt/caged/codex-cli/releases -mindepth 1 -maxdepth 1 -type d -print -quit)" \
+    && ln -sfn "$codex_release" /opt/caged/codex-cli/current \
+    && ln -sf /opt/caged/codex-cli/current/bin/codex /usr/local/bin/codex-real \
     && ln -sf /opt/caged/pi-home/.pi/agent/bin/pi /usr/local/bin/pi \
     && ln -sf ../lib/node_modules/@google/gemini-cli/bundle/gemini.js /usr/bin/gemini \
     && ln -sf ../lib/node_modules/@github/copilot/npm-loader.js /usr/bin/copilot \

@@ -51,7 +51,7 @@ This is the most important section for the cleanup. Based on the repo today:
 | 5a | Config exists on host -> mount it, **changes persist** | Only **Pi** is mounted read-write. Claude, Codex and Gemini configs are **copied to a temp dir and mounted read-only**; changes are thrown away on exit | **[PARTIAL]**. This is the biggest gap |
 | 5b | No host config -> don't mount, fresh install | Missing paths are skipped and the CLI starts fresh. Nothing is written to the host | **[DONE]** |
 | 6 | Current directory mounted | Mounted read-write at a fixed `/workspace`. `--workdir` and `--no-mount` flags exist. Refuses `/` and bare `$HOME` unless `--allow-broad-mount` | **[PARTIAL]**: works, but the container path should become `/workspace/<project-folder-name>` (FR-8) |
-| 7 | GitHub CLI and more later | Not installed. `~/.gitconfig` is already passed through | **[MISSING]** (planned later) |
+| 7 | GitHub CLI and more later | GitHub CLI (`gh`) is installed and `~/.config/gh` is mounted read-write when present | **[DONE]** (brought into v1 scope by user priority) |
 
 ### Answers to my earlier questions that the repo already gives us
 
@@ -146,7 +146,7 @@ Config mounting alone gives a logged-in session on Linux but not on a Mac, so we
 | gemini | yes | `~/.gemini/` | `-i <prompt>` |
 | pi | yes | `~/.pi/`, `~/.config/pi/` | positional |
 | copilot (GitHub Copilot CLI) | yes | `~/.copilot/` | `-p <prompt>` |
-| gh (GitHub CLI) | no | `~/.config/gh/` | n/a, later |
+| gh (GitHub CLI) | yes | `~/.config/gh/` | available in the interactive shell |
 
 Shared across all: `~/.gitconfig`.
 
@@ -223,7 +223,7 @@ Two more things to be aware of with direct mounts:
 | ID | Requirement | Status |
 |---|---|---|
 | FR-28 | Adding a CLI = one registry entry + one image install step; no core-logic change | PARTIAL: the registry is data, but `Writable: agent.Name == "pi"` is hard-coded in the resolver, and the install step is hand-edited in a single `RUN` line |
-| FR-29 | GitHub CLI installed in image, auth via `~/.config/gh` mount or token | MISSING (later) |
+| FR-29 | GitHub CLI installed in image, auth via `~/.config/gh` mount or token | DONE |
 | FR-30 | Other harnesses/tools via the registry | MISSING (later) |
 
 ## 7. Non-Functional Requirements
@@ -354,7 +354,7 @@ Findings from reading the code, roughly in priority order.
 
 ## 11. Out of Scope Now, Planned Later
 
-GitHub CLI and extra harnesses, Homebrew formula, Keychain extraction (auth option B), `caged update`, per-project overrides, network restrictions or resource limits, port publishing, other Docker runtimes, local-LLM wiring.
+Extra harnesses, Homebrew formula, Keychain extraction (auth option B), `caged update`, per-project overrides, network restrictions or resource limits, port publishing, other Docker runtimes, local-LLM wiring.
 
 ## 12. Open Questions
 
@@ -368,12 +368,12 @@ Ordered by how much they change the design.
 6. ~~Passing flags to the CLI~~ **Decided:** not needed for v1. (The `caged <cli> 'prompt'` form is still wanted.)
 7. **Env defaults.** *Assumed default:* keep today's per-agent lists plus `--env NAME`.
 8. **Permission modes.** *Assumed default:* not in v1. Each CLI starts in its normal mode.
-9. **Scope of v1 CLIs.** Keep Claude, Codex, Gemini, Pi, and GitHub Copilot CLI. GitHub CLI (`gh`) remains later.
+9. **Scope of v1 CLIs.** Keep Claude, Codex, Gemini, Pi, GitHub Copilot CLI, and GitHub CLI (`gh`).
 10. **Version policy.** *Assumed default:* latest at build time. `caged build --no-cache` is the update path. No `caged update` in v1.
 11. ~~Platforms~~ **Decided:** macOS primary, Linux best-effort, Windows dropped.
 12. **`caged list`.** *Assumed default:* unchanged for v1. Showing detected configs is a later nicety.
 13. **Distribution.** Homebrew later is decided. For the first public release, are GitHub release binaries enough, or do you want the tap from day one?
-14. **GitHub CLI.** *Assumed default:* later. When it arrives, install it and mount `~/.config/gh` read-write like the others.
+14. **GitHub CLI.** Included in v1 per the user's priority. Install `gh` from GitHub's signed repository and mount `~/.config/gh` read-write like the other CLIs.
 15. **Refactor freedom.** *Assumed default:* yes. The project is unreleased (9 commits), so the cleanup may rename and move code and change or remove flags freely.
 16. ~~Docker runtime~~ **Decided:** Docker Desktop only.
 17. ~~Ports~~ **Decided:** out of scope.

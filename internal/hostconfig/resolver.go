@@ -1,6 +1,7 @@
 package hostconfig
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +61,22 @@ func ResolveAllConfigsReport(home string, exists func(string) bool) ConfigReport
 				report.Refused = appendUnique(report.Refused, hostPath+" (resolves outside home)")
 				continue
 			}
+			if len(path.MaskPaths) > 0 {
+				if err := validateMaskedConfigTree(resolvedHost, path.MaskPaths); err != nil {
+					report.Refused = appendUnique(report.Refused, hostPath+" ("+err.Error()+")")
+					continue
+				}
+				key := resolvedHost + "\x00" + filepath.Clean(path.ContainerPath)
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					report.Mounts = append(report.Mounts, ResolvedMount{
+						Agent: entry.Name, Name: filepath.Clean(path.HostPath), HostPath: resolvedHost,
+						DestPath: filepath.ToSlash(filepath.Join("/home/caged", filepath.Clean(path.ContainerPath))),
+						Writable: path.Writable, MaskPaths: append([]string(nil), path.MaskPaths...),
+					})
+				}
+				continue
+			}
 			mounts, refused := collectSafeMounts(resolvedHost)
 			for _, reason := range refused {
 				report.Refused = appendUnique(report.Refused, reason)
@@ -106,6 +123,54 @@ func ResolveAllConfigsReport(home string, exists func(string) bool) ConfigReport
 		report.Missing = appendUnique(report.Missing, sharedGitConfig)
 	}
 	return report
+}
+
+func validateMaskedConfigTree(root string, masks []string) error {
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return err
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("masked config root must be a directory")
+	}
+	maskPaths := make([]string, 0, len(masks))
+	for _, mask := range masks {
+		clean := filepath.Clean(mask)
+		if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("invalid config mask path %q", mask)
+		}
+		maskPaths = append(maskPaths, filepath.Join(root, clean))
+	}
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path != root {
+			for _, mask := range maskPaths {
+				if path == mask || IsWithinHome(path, mask) {
+					if entry.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+			}
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil || !IsWithinHome(resolved, root) {
+				return fmt.Errorf("symlink %q resolves outside the config directory or cannot be resolved", path)
+			}
+			return nil
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("special file %q is not covered by a config mask", path)
+		}
+		return nil
+	})
 }
 
 func collectSafeMounts(root string) ([]string, []string) {

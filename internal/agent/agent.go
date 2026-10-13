@@ -13,6 +13,7 @@ type ConfigPath struct {
 	ContainerPath string
 	Writable      bool
 	EnvOverride   string
+	MaskPaths     []string
 }
 
 type PromptStyle int
@@ -71,7 +72,13 @@ var registry = map[string]Agent{
 		Command:     []string{"codex"},
 		Description: "Codex CLI",
 		ConfigPaths: []ConfigPath{
-			{HostPath: ".codex", ContainerPath: ".codex", Writable: true, EnvOverride: "CODEX_HOME"},
+			{
+				HostPath:      ".codex",
+				ContainerPath: ".codex",
+				Writable:      true,
+				EnvOverride:   "CODEX_HOME",
+				MaskPaths:     []string{"app-server-control", "app-server-daemon", "ipc", "packages/app-server-daemon", "tmp/arg0"},
+			},
 		},
 		Prompt: PromptFlag, PromptFlag: "exec",
 		Auth: AuthStrategy{Environment: []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"}, CredentialPaths: []string{".codex/auth.json"}, SupportsDeviceLogin: true},
@@ -85,6 +92,15 @@ var registry = map[string]Agent{
 		},
 		Prompt: PromptFlag, PromptFlag: "-i",
 		Auth: AuthStrategy{Environment: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}, CredentialPaths: []string{".gemini/oauth_creds.json"}},
+	},
+	"gh": {
+		Name:        "gh",
+		Command:     []string{"gh"},
+		Description: "GitHub CLI",
+		ConfigPaths: []ConfigPath{
+			{HostPath: ".config/gh", ContainerPath: ".config/gh", Writable: true},
+		},
+		Auth: AuthStrategy{Environment: []string{"GH_TOKEN", "GITHUB_TOKEN"}, CredentialPaths: []string{".config/gh/hosts.yml"}},
 	},
 	"copilot": {
 		Name:        "copilot",
