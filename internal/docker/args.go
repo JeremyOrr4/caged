@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -11,6 +12,9 @@ import (
 // runArgs translates a run plan into `docker run` arguments.
 func runArgs(spec plan.RunSpec, platform system.Platform) []string {
 	args := []string{"run", "-it", "--rm"}
+	for _, port := range spec.Ports {
+		args = append(args, "-p", fmt.Sprintf("%s:%d:%d", port.HostIP, port.HostPort, port.ContainerPort))
+	}
 
 	if spec.Mount != nil {
 		args = append(args,
@@ -42,9 +46,13 @@ func runArgs(spec plan.RunSpec, platform system.Platform) []string {
 }
 
 // buildArgs translates a build plan into `docker build` arguments for the
-// build context written to dir.
-func buildArgs(spec plan.BuildSpec, dir string) []string {
+// build context written to dir. idFile is where docker writes the new image ID.
+func buildArgs(spec plan.BuildSpec, dir, idFile string) []string {
 	args := []string{"build", "-t", spec.Image}
+	for _, label := range spec.Labels {
+		args = append(args, "--label", label.Key+"="+label.Value)
+	}
+	args = append(args, "--iidfile", idFile)
 	if spec.NoCache {
 		args = append(args, "--no-cache")
 	}

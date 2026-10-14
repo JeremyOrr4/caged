@@ -9,13 +9,13 @@ WARNING: allowlisted agent credentials are available inside the container.
 docker: Error response from daemon: Mounts denied: the path is not shared from the host.
 Docker could not mount the project path; in Docker Desktop, add its parent directory under Settings > Resources > File Sharing: exit status 125
 === docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
 image
 inspect
 caged-runtime:latest
----
-info
---format
-{{.ServerVersion}}
 ---
 run
 -it

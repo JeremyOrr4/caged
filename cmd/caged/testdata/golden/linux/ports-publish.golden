@@ -1,0 +1,79 @@
+args: ["-p" "3000" "-p" "8080:3000" "--verbose" "claude"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+fake docker run output
+=== stderr
+WARNING: allowlisted agent credentials are available inside the container.
+port: publish 127.0.0.1:3000 -> container 3000
+port: publish 127.0.0.1:8080 -> container 3000
+config: pass $ROOT/home/.claude -> /home/caged/.claude
+config: pass $ROOT/home/.codex -> /home/caged/.codex
+config: pass $ROOT/home/.copilot -> /home/caged/.copilot
+config: pass $ROOT/home/.gemini/oauth_creds.json -> /home/caged/.gemini/oauth_creds.json
+config: pass $ROOT/home/.gemini/settings.json -> /home/caged/.gemini/settings.json
+config: pass $ROOT/home/.config/gh -> /home/caged/.config/gh
+config: pass $ROOT/home/.pi -> /home/caged/.pi
+config: pass $ROOT/home/.gitconfig -> /home/caged/.gitconfig
+config: refused $ROOT/home/.gemini/current-settings.json (symlinks and special files are excluded from config mounts)
+config: refused $ROOT/home/.config/pi (resolves outside home)
+env: pass ANTHROPIC_API_KEY
+command: ["claude"]
+image: no extension (~/.config/caged/image.json not found)
+image: caged-runtime:latest is current (runtime $RUNTIME_HASH12)
+=== docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
+image
+inspect
+caged-runtime:latest
+---
+run
+-it
+--rm
+-p
+127.0.0.1:3000:3000
+-p
+127.0.0.1:8080:3000
+-v
+$ROOT/work/project:/workspace/project
+-w
+/workspace/project
+-v
+$ROOT/home/.claude:/home/caged/.claude
+-v
+$ROOT/home/.codex:/home/caged/.codex
+--tmpfs
+/home/caged/.codex/app-server-control
+--tmpfs
+/home/caged/.codex/app-server-daemon
+--tmpfs
+/home/caged/.codex/ipc
+--tmpfs
+/home/caged/.codex/packages/app-server-daemon
+--tmpfs
+/home/caged/.codex/tmp/arg0
+-v
+$ROOT/home/.copilot:/home/caged/.copilot
+-v
+$ROOT/home/.gemini/oauth_creds.json:/home/caged/.gemini/oauth_creds.json
+-v
+$ROOT/home/.gemini/settings.json:/home/caged/.gemini/settings.json
+-v
+$ROOT/home/.config/gh:/home/caged/.config/gh
+-v
+$ROOT/home/.pi:/home/caged/.pi
+-v
+$ROOT/home/.gitconfig:/home/caged/.gitconfig:ro
+--user
+$UID:$GID
+-e
+ANTHROPIC_API_KEY
+-e
+CAGED_RETURN_TO_SHELL=1
+caged-runtime:latest
+claude
+---

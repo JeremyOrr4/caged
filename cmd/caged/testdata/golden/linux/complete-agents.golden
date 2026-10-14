@@ -4,15 +4,17 @@ error: <nil>
 leftover temp entries: 0
 === stdout
 build	Build the runtime image
+clean	Remove caged's Docker images
 completion	Generate the autocompletion script for the specified shell
+doctor	Check Docker, the images, and the project directory
 help	Help about any command
 list	List supported AI agents
-claude
-codex
-copilot
-gemini
-gh
-pi
+claude	Claude Code
+codex	Codex CLI
+copilot	GitHub Copilot CLI
+gemini	Gemini CLI
+gh	GitHub CLI
+pi	Pi coding agent
 :4
 === stderr
 Completion ended with directive: ShellCompDirectiveNoFileComp

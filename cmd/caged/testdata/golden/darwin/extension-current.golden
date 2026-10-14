@@ -1,0 +1,36 @@
+args: ["--verbose" "--no-config" "claude"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+fake docker run output
+=== stderr
+env: skipped ANTHROPIC_API_KEY (unset or disallowed)
+command: ["claude"]
+image: caged-runtime:latest is current (runtime $RUNTIME_HASH12)
+image: extension from ~/.config/caged/image.json (apt: neovim, tmux) -> caged-runtime:ext
+=== docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
+image
+inspect
+caged-runtime:latest
+---
+image
+inspect
+caged-runtime:ext
+---
+run
+-it
+--rm
+-v
+$ROOT/work/project:/workspace/project
+-w
+/workspace/project
+-e
+CAGED_RETURN_TO_SHELL=1
+caged-runtime:ext
+claude
+---

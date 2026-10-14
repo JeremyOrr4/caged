@@ -7,14 +7,17 @@ fake docker run output
 === stderr
 WARNING: allowlisted agent credentials are available inside the container.
 config: refused $ROOT/missing-home (home cannot be resolved)
+command: ["bash"]
+image: no extension (~/.config/caged/image.json not found)
+image: caged-runtime:latest is current (runtime $RUNTIME_HASH12)
 === docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
 image
 inspect
 caged-runtime:latest
----
-info
---format
-{{.ServerVersion}}
 ---
 run
 -it

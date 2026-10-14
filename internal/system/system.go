@@ -29,7 +29,8 @@ func (FS) MkdirTemp(dir, pattern string) (string, error) {
 func (FS) WriteFile(name string, data []byte, perm fs.FileMode) error {
 	return os.WriteFile(name, data, perm)
 }
-func (FS) RemoveAll(path string) error { return os.RemoveAll(path) }
+func (FS) ReadFile(name string) ([]byte, error) { return os.ReadFile(name) }
+func (FS) RemoveAll(path string) error          { return os.RemoveAll(path) }
 
 // Env is the real process environment.
 type Env struct{}

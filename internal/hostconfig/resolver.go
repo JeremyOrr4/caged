@@ -10,6 +10,10 @@ import (
 	"github.com/JeremyOrr4/caged/internal/plan"
 )
 
+// SharedOwner is the ConfigMount.Agent value of mounts shared by all agents.
+// No agent may use this name.
+const SharedOwner = plan.SharedOwner
+
 // containerHome is the home directory of the user inside the runtime image.
 const containerHome = "/home/caged"
 
@@ -60,7 +64,7 @@ func (r *Resolver) Resolve(home string) plan.ConfigReport {
 	home = filepath.Clean(home)
 	resolvedHome, err := r.fs.EvalSymlinks(home)
 	if err != nil {
-		return plan.ConfigReport{Refused: []string{home + " (home cannot be resolved)"}}
+		return plan.ConfigReport{Refused: []plan.Refusal{{Path: home, Reason: "home cannot be resolved"}}}
 	}
 	pass := &resolution{fs: r.fs, home: home, resolvedHome: resolvedHome, seen: make(map[string]struct{})}
 	for _, definition := range r.agents {
@@ -109,42 +113,42 @@ func (r *resolution) agentPath(agentName string, path agent.ConfigPath, hostPath
 	}
 	resolvedHost, err := r.fs.EvalSymlinks(hostPath)
 	if err != nil {
-		r.refuse(hostPath + " (unresolvable symlink)")
+		r.refuse(hostPath, "unresolvable symlink")
 		return
 	}
 	if filepath.Clean(resolvedHost) == filepath.Clean(r.resolvedHome) {
-		r.refuse(hostPath + " (config path resolves to the home directory)")
+		r.refuse(hostPath, "config path resolves to the home directory")
 		return
 	}
 	if !isWithin(resolvedHost, r.resolvedHome) {
-		r.refuse(hostPath + " (resolves outside home)")
+		r.refuse(hostPath, "resolves outside home")
 		return
 	}
 	name, dest := filepath.Clean(path.HostPath), filepath.Clean(path.ContainerPath)
 	if len(path.MaskPaths) > 0 {
 		// A masked tree is mounted whole; tmpfs mounts hide the masked entries.
 		if err := validateMaskedConfigTree(r.fs, resolvedHost, path.MaskPaths); err != nil {
-			r.refuse(hostPath + " (" + err.Error() + ")")
+			r.refuse(hostPath, err.Error())
 			return
 		}
-		r.addMount(agentName, name, resolvedHost, dest, path.Writable, append([]string(nil), path.MaskPaths...))
+		r.addMount(agentName, name, hostPath, resolvedHost, dest, path.Writable, append([]string(nil), path.MaskPaths...))
 		return
 	}
 	mounts, refused := collectSafeMounts(r.fs, resolvedHost)
-	for _, reason := range refused {
-		r.refuse(reason)
+	for _, refusal := range refused {
+		r.report.Refused = appendUnique(r.report.Refused, refusal)
 	}
 	for _, mountPath := range mounts {
 		relative, err := filepath.Rel(resolvedHost, mountPath)
 		if err != nil {
-			r.refuse(hostPath + " (cannot map safe config path)")
+			r.refuse(hostPath, "cannot map safe config path")
 			continue
 		}
 		mountDest := dest
 		if relative != "." {
 			mountDest = filepath.Join(dest, relative)
 		}
-		r.addMount(agentName, name, mountPath, mountDest, path.Writable, nil)
+		r.addMount(agentName, name, hostPath, mountPath, mountDest, path.Writable, nil)
 	}
 }
 
@@ -159,25 +163,27 @@ func (r *resolution) sharedFile(file SharedFile) {
 	}
 	resolved, err := r.fs.EvalSymlinks(hostPath)
 	if err != nil || !isWithin(resolved, r.resolvedHome) {
-		r.refuse(hostPath + " (resolves outside home or cannot be resolved)")
+		r.refuse(hostPath, "resolves outside home or cannot be resolved")
 		return
 	}
 	if info, err := r.fs.Stat(resolved); err != nil || !info.Mode().IsRegular() {
-		r.refuse(hostPath + " (" + file.Description + " must be a regular file)")
+		r.refuse(hostPath, file.Description+" must be a regular file")
 		return
 	}
 	r.report.Mounts = append(r.report.Mounts, plan.ConfigMount{
-		Agent:    "shared",
+		Agent:    SharedOwner,
 		Name:     name,
 		HostPath: resolved,
 		DestPath: filepath.ToSlash(filepath.Join(containerHome, name)),
+		Root:     hostPath,
 		Writable: false,
 	})
 }
 
-// addMount records a mount unless the same host path is already mounted at
-// the same container path.
-func (r *resolution) addMount(agentName, name, hostPath, dest string, writable bool, masks []string) {
+// addMount records a mount of hostPath unless the same host path is already
+// mounted at the same container path. root is the config root before symlink
+// resolution.
+func (r *resolution) addMount(agentName, name, root, hostPath, dest string, writable bool, masks []string) {
 	key := hostPath + "\x00" + dest
 	if _, ok := r.seen[key]; ok {
 		return
@@ -188,6 +194,7 @@ func (r *resolution) addMount(agentName, name, hostPath, dest string, writable b
 		Name:      name,
 		HostPath:  hostPath,
 		DestPath:  filepath.ToSlash(filepath.Join(containerHome, dest)),
+		Root:      root,
 		Writable:  writable,
 		MaskPaths: masks,
 	})
@@ -198,6 +205,6 @@ func (r *resolution) exists(path string) bool {
 	return err == nil
 }
 
-func (r *resolution) refuse(reason string) {
-	r.report.Refused = appendUnique(r.report.Refused, reason)
+func (r *resolution) refuse(path, reason string) {
+	r.report.Refused = appendUnique(r.report.Refused, plan.Refusal{Path: path, Reason: reason})
 }

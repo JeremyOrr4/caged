@@ -1,0 +1,8 @@
+args: ["claude"]
+exit code: 1
+error: ~/.config/caged/image.json: invalid apt package name "vim; curl x"; names must match ^[a-z0-9][a-z0-9+.-]+$
+leftover temp entries: 0
+=== stdout
+=== stderr
+~/.config/caged/image.json: invalid apt package name "vim; curl x"; names must match ^[a-z0-9][a-z0-9+.-]+$
+=== docker invocations

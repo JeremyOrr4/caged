@@ -1,0 +1,44 @@
+args: ["doctor"]
+exit code: 1
+error: doctor: 1 checks failed
+leftover temp entries: 0
+=== stdout
+caged test (linux/amd64)
+PASS  docker     $ROOT/bin/docker
+PASS  daemon     Docker Desktop, engine 27.0.0, linux/amd64
+PASS  image      caged-runtime:latest is current (runtime $RUNTIME_HASH12, built by caged test)
+PASS  extension  no extension file
+PASS  ext-image  not used
+FAIL  arch       image linux/s390x does not match Docker (amd64); it runs under emulation; run caged build --no-cache
+PASS  project    $ROOT/work/project can be mounted
+PASS  versions   claude 2.1.3, codex 0.46.0, copilot 0.0.330, gemini 0.9.0, gh 2.81.0, pi 0.12.0
+=== stderr
+doctor: 1 checks failed
+=== docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
+image
+inspect
+caged-runtime:latest
+---
+image
+inspect
+caged-runtime:ext
+---
+run
+--rm
+-v
+$ROOT/work/project:/workspace/project:ro
+--entrypoint
+true
+caged-runtime:latest
+---
+run
+--rm
+--entrypoint
+cat
+caged-runtime:latest
+/opt/caged/versions
+---

@@ -7,7 +7,3 @@ leftover temp entries: 0
 WARNING: allowlisted agent credentials are available inside the container.
 refusing to mount your entire home directory; use --allow-broad-mount to override
 === docker invocations
-image
-inspect
-caged-runtime:latest
----

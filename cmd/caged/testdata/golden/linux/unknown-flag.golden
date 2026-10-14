@@ -1,8 +1,8 @@
 args: ["--bogus"]
 exit code: 1
-error: unknown flag: --bogus
+error: unknown flag: --bogus (caged's flags go before the agent name; pass agent flags after --, e.g. caged claude -- --resume)
 leftover temp entries: 0
 === stdout
 === stderr
-unknown flag: --bogus
+unknown flag: --bogus (caged's flags go before the agent name; pass agent flags after --, e.g. caged claude -- --resume)
 === docker invocations

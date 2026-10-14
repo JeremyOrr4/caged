@@ -1,0 +1,8 @@
+args: ["-p" "70000" "claude"]
+exit code: 1
+error: invalid port "70000": 70000 is out of range 1-65535
+leftover temp entries: 0
+=== stdout
+=== stderr
+invalid port "70000": 70000 is out of range 1-65535
+=== docker invocations

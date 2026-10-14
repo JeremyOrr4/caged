@@ -11,6 +11,6 @@ func gemini() Agent {
 		},
 		Prompt:     PromptFlag,
 		PromptFlag: "-i",
-		Auth:       AuthStrategy{Environment: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}, CredentialPaths: []string{".gemini/oauth_creds.json"}},
+		Auth:       AuthStrategy{Environment: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}},
 	}
 }

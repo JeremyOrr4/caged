@@ -1,0 +1,176 @@
+#!/bin/sh
+# Fake docker CLI for the golden tests. The test copies it to $ROOT/bin/docker.
+#
+# Every invocation is logged first, to $FAKE_DOCKER_LOG: one argument per line,
+# then a "---" line. Replies come from the state directory $FAKE_DOCKER_STATE:
+#
+#   images/<ref>.json  The `image inspect` reply for <ref>, one compact JSON
+#                      array. A missing file means: stderr "Error response
+#                      from daemon: No such image: <ref>" and exit 1.
+#   fail/<verb>        Makes <verb> fail. Line 1 is the exit code, the rest is
+#                      written to stderr. Verbs: info, image-inspect, image-rm,
+#                      image-ls, build, run. For run, the normal stdout is
+#                      printed first.
+#   info               The reply line of `info`: version|os|arch. Default:
+#                      27.0.0|Docker Desktop|x86_64
+#   build-count        Number of builds so far; the next build gets the image
+#                      ID sha256:fake-<count+1>. Written by build.
+#   versions           Printed by `run --entrypoint cat ...`.
+#   ls                 Images that `image rm` can remove, and the lines `image ls` prints (JSON objects; a "Labels" field
+#                      is matched by --filter label=). Filtered by --filter and by a
+#                      repository argument.
+#
+# `build` writes images/<tag>.json from its own -t and --label arguments, so a
+# rebuilt image is current without special cases in the tests. Label keys and
+# values must not contain quotes or backslashes.
+
+{ printf '%s\n' "$@"; echo '---'; } >> "$FAKE_DOCKER_LOG"
+state="$FAKE_DOCKER_STATE"
+
+# fail_if_set VERB: fail like docker when fail/VERB exists.
+fail_if_set() {
+  file="$state/fail/$1"
+  if [ -f "$file" ]; then
+    tail -n +2 "$file" >&2
+    exit "$(head -n 1 "$file")"
+  fi
+}
+
+cmd_info() {
+  fail_if_set info
+  if [ -f "$state/info" ]; then cat "$state/info"; else echo '27.0.0|Docker Desktop|x86_64'; fi
+}
+
+cmd_image_inspect() {
+  fail_if_set image-inspect
+  for ref; do :; done
+  file="$state/images/$ref.json"
+  if [ ! -f "$file" ]; then
+    echo "Error response from daemon: No such image: $ref" >&2
+    exit 1
+  fi
+  cat "$file"
+}
+
+cmd_image_rm() {
+  fail_if_set image-rm
+  target="$3"
+  if [ -f "$state/images/$target.json" ]; then
+    rm "$state/images/$target.json"
+    echo "Untagged: $target"
+    return
+  fi
+  for file in "$state/images/"*.json; do
+    [ -f "$file" ] || continue
+    if grep -q "\"Id\":\"$target\"" "$file"; then
+      rm "$file"
+      echo "Deleted: $target"
+      return
+    fi
+  done
+  # An image that only the "ls" file knows about can be removed too, by ID or
+  # by repository:tag.
+  repository="${target%%:*}"; tag="${target#*:}"
+  if [ -f "$state/ls" ] && { grep -qF "\"ID\":\"$target\"" "$state/ls" ||
+    grep -qF "\"Repository\":\"$repository\",\"Tag\":\"$tag\"" "$state/ls"; }; then
+    echo "Deleted: $target"
+    return
+  fi
+  echo "Error response from daemon: No such image: $target" >&2
+  exit 1
+}
+
+# cmd_image_ls prints the lines of the "ls" state file. Like docker, it honors
+# --filter label=<text> (keeps lines that contain <text>, in their "Labels"
+# field) and a repository argument (keeps lines whose Repository matches).
+cmd_image_ls() {
+  fail_if_set image-ls
+  [ -f "$state/ls" ] || return 0
+  needle=''; repository=''; previous=''
+  for arg in "$@"; do
+    case "$previous" in
+      --filter) needle="${arg#label=}" ;;
+      --format) ;;
+      *) case "$arg" in image|ls|-*) ;; *) repository="$arg" ;; esac ;;
+    esac
+    previous="$arg"
+  done
+  while IFS= read -r line; do
+    if [ -n "$needle" ]; then case "$line" in *"$needle"*) ;; *) continue ;; esac; fi
+    if [ -n "$repository" ]; then case "$line" in *"\"Repository\":\"$repository\""*) ;; *) continue ;; esac; fi
+    printf '%s\n' "$line"
+  done < "$state/ls"
+}
+
+# labels_json prints the --label lines in $1 (key=value, one per line) as a JSON object.
+labels_json() {
+  if [ -z "$1" ]; then printf 'null'; return; fi
+  printf '{'
+  separator=''
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf '%s"%s":"%s"' "$separator" "${line%%=*}" "${line#*=}"
+    separator=','
+  done <<LABELS
+$1
+LABELS
+  printf '}'
+}
+
+cmd_build() {
+  fail_if_set build
+  context=''; tag=''; labels=''; iidfile=''; previous=''
+  for arg in "$@"; do
+    case "$previous" in
+      -t) tag="$arg" ;;
+      --label) labels="$labels$arg
+" ;;
+      --iidfile) iidfile="$arg" ;;
+    esac
+    previous="$arg"
+    context="$arg"
+  done
+  {
+    echo "build context Dockerfile: $(cksum < "$context/Dockerfile")"
+    if [ -f "$context/caged-entrypoint.sh" ]; then
+      echo "build context caged-entrypoint.sh: $(cksum < "$context/caged-entrypoint.sh")"
+    fi
+    if [ -x "$context/caged-entrypoint.sh" ]; then echo 'build context entrypoint is executable'; fi
+    echo '---'
+  } >> "$FAKE_DOCKER_LOG"
+  echo 'fake docker build output'
+  mkdir -p "$state/images"
+  count=$(cat "$state/build-count" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  echo "$count" > "$state/build-count"
+  id="sha256:fake-$count"
+  if [ -n "$tag" ]; then
+    printf '[{"Id":"%s","Os":"linux","Architecture":"amd64","Config":{"Labels":%s}}]\n' \
+      "$id" "$(labels_json "$labels")" > "$state/images/$tag.json"
+  fi
+  if [ -n "$iidfile" ]; then printf '%s' "$id" > "$iidfile"; fi
+}
+
+cmd_run() {
+  case " $* " in
+    *" --entrypoint cat "*)
+      fail_if_set run
+      if [ -f "$state/versions" ]; then cat "$state/versions"; fi
+      return ;;
+    *" --entrypoint true "*)
+      fail_if_set run
+      return ;;
+  esac
+  echo 'fake docker run output'
+  fail_if_set run
+}
+
+case "$1 $2" in
+  "info "*) cmd_info "$@" ;;
+  "image inspect") cmd_image_inspect "$@" ;;
+  "image rm") cmd_image_rm "$@" ;;
+  "image ls") cmd_image_ls "$@" ;;
+  "build "*) cmd_build "$@" ;;
+  "run "*) cmd_run "$@" ;;
+esac
+exit 0

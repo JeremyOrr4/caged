@@ -11,6 +11,6 @@ func copilot() Agent {
 		},
 		Prompt:     PromptFlag,
 		PromptFlag: "-p",
-		Auth:       AuthStrategy{Environment: []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}, CredentialPaths: []string{".copilot/"}, SupportsDeviceLogin: true},
+		Auth:       AuthStrategy{Environment: []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}},
 	}
 }

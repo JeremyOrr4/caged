@@ -9,17 +9,33 @@ built runtime image caged-runtime:latest
 === docker invocations
 info
 --format
-{{.ServerVersion}}
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
+image
+inspect
+caged-runtime:latest
 ---
 build
 -t
 caged-runtime:latest
+--label
+io.github.jeremyorr4.caged.role=runtime
+--label
+io.github.jeremyorr4.caged.runtime-hash=$RUNTIME_HASH
+--label
+io.github.jeremyorr4.caged.version=test
+--iidfile
+$ROOT/tmp/caged-runtime-N/image-id
 --no-cache
 -f
 $ROOT/tmp/caged-runtime-N/Dockerfile
 $ROOT/tmp/caged-runtime-N
 ---
-build context Dockerfile: 2970434799 5025
+build context Dockerfile: $CKSUM
 build context caged-entrypoint.sh: 848039441 211
 build context entrypoint is executable
+---
+image
+rm
+sha256:fake-base
 ---

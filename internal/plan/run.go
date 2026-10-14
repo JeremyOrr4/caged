@@ -1,21 +1,23 @@
 // Package plan contains transport-neutral data for a disposable agent run.
 package plan
 
-import (
-	"fmt"
-	"io/fs"
-
-	"github.com/JeremyOrr4/caged/internal/agent"
-)
+import "io/fs"
 
 // Mount describes a host path exposed at a container path.
 type Mount struct{ HostPath, ContainerPath string }
 
+// SharedOwner is the ConfigMount.Agent value of mounts shared by all agents.
+// No agent may use this name.
+const SharedOwner = "shared"
+
 // ConfigMount includes ownership and access information for host configuration.
 type ConfigMount struct {
 	Agent, Name, HostPath, DestPath string
-	Writable                        bool
-	MaskPaths                       []string
+	// Root is the config root on the host after any override, before symlink
+	// resolution. HostPath is where the mount actually comes from.
+	Root      string
+	Writable  bool
+	MaskPaths []string
 }
 
 // ConfigReport is the outcome of host config discovery: the mounts to make,
@@ -23,14 +25,21 @@ type ConfigMount struct {
 type ConfigReport struct {
 	Mounts  []ConfigMount
 	Missing []string
-	Refused []string
+	Refused []Refusal
 }
+
+// Refusal is a host config path that is not mounted, and why.
+type Refusal struct{ Path, Reason string }
+
+// String formats the refusal as "path (reason)".
+func (r Refusal) String() string { return r.Path + " (" + r.Reason + ")" }
 
 // RunSpec is an immutable-by-convention description consumed by a runtime adapter.
 type RunSpec struct {
 	Image         string
 	Command       []string
 	Mount         *Mount
+	Ports         []Port
 	ConfigMounts  []ConfigMount
 	EnvVars       []string
 	ReturnToShell bool
@@ -38,11 +47,26 @@ type RunSpec struct {
 
 // BuildSpec describes an image build from an in-memory build context.
 type BuildSpec struct {
-	Image      string // tag of the image to build
-	Dockerfile string // name of the Dockerfile inside Files
-	Files      []File // the build context, written in order
-	NoCache    bool
+	Image       string  // tag of the image to build
+	Dockerfile  string  // name of the Dockerfile inside Files
+	ContextName string  // names the temporary build directory
+	Files       []File  // the build context, written in order
+	Labels      []Label // image labels, in the order given to docker build
+	NoCache     bool
 }
+
+// BuildOptions are the per-build settings that do not depend on the image.
+type BuildOptions struct{ NoCache bool }
+
+// Extension is the user's request for extra packages in the image, read from
+// image.json. Apt is sorted and has no duplicates.
+type Extension struct {
+	Source string // the file it came from, shown with ~ for the home directory
+	Apt    []string
+}
+
+// Label is one image label.
+type Label struct{ Key, Value string }
 
 // File is one file of an image build context.
 type File struct {
@@ -50,31 +74,4 @@ type File struct {
 	Label string // short name used in error messages
 	Data  []byte
 	Mode  fs.FileMode
-}
-
-// BuildRunSpec combines resolved inputs into a complete container invocation.
-func BuildRunSpec(image string, selected *agent.Agent, prompt *string, projectMount *Mount, configMounts []ConfigMount, envVars []string) (RunSpec, error) {
-	var mountCopy *Mount
-	if projectMount != nil {
-		copied := *projectMount
-		mountCopy = &copied
-	}
-	configCopies := append([]ConfigMount(nil), configMounts...)
-	for i := range configCopies {
-		configCopies[i].MaskPaths = append([]string(nil), configCopies[i].MaskPaths...)
-	}
-	spec := RunSpec{Image: image, Command: []string{"bash"}, Mount: mountCopy, ConfigMounts: configCopies, EnvVars: append([]string(nil), envVars...)}
-	if selected == nil {
-		if prompt != nil {
-			return RunSpec{}, fmt.Errorf("a prompt requires an agent")
-		}
-		return spec, nil
-	}
-	command, err := selected.LaunchCommand(prompt)
-	if err != nil {
-		return RunSpec{}, err
-	}
-	spec.Command = command
-	spec.ReturnToShell = true
-	return spec, nil
 }

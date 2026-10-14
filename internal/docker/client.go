@@ -3,12 +3,14 @@ package docker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"path/filepath"
 	"strings"
 
+	"github.com/JeremyOrr4/caged/internal/engine"
 	"github.com/JeremyOrr4/caged/internal/plan"
 	"github.com/JeremyOrr4/caged/internal/system"
 )
@@ -23,6 +25,7 @@ type Executor interface {
 type FileSystem interface {
 	MkdirTemp(dir, pattern string) (string, error)
 	WriteFile(name string, data []byte, perm fs.FileMode) error
+	ReadFile(name string) ([]byte, error)
 	RemoveAll(path string) error
 }
 
@@ -41,66 +44,195 @@ func NewClient(exec Executor, fsys FileSystem, platform system.Platform, stdio s
 	return &Client{exec: exec, fs: fsys, platform: platform, stdio: stdio}
 }
 
-// Check distinguishes a missing docker CLI from a stopped Docker daemon.
-func (c *Client) Check(ctx context.Context) error {
+// dockerPath resolves the docker CLI. Every docker call goes through it, so a
+// missing CLI always produces the same error.
+func (c *Client) dockerPath() (string, error) {
+	docker, err := c.exec.LookPath("docker")
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindNotInstalled, Message: "Docker is not installed or not on PATH", Err: err}
+	}
+	return docker, nil
+}
+
+// Daemon checks the host, the docker CLI, and the daemon, and returns what the
+// daemon reports. It distinguishes an unsupported host, a missing docker CLI,
+// and a stopped daemon.
+func (c *Client) Daemon(ctx context.Context) (engine.DaemonInfo, error) {
 	if err := checkArch(c.platform); err != nil {
-		return err
+		return engine.DaemonInfo{}, err
 	}
-	docker, err := c.exec.LookPath("docker")
+	docker, err := c.dockerPath()
 	if err != nil {
-		return fmt.Errorf("Docker is not installed or not on PATH: %w", err)
+		return engine.DaemonInfo{}, err
 	}
-	var output bytes.Buffer
-	info := system.Command{Path: docker, Args: []string{"info", "--format", "{{.ServerVersion}}"}, Stdout: &output, Stderr: &output}
+	var stdout, stderr bytes.Buffer
+	info := system.Command{Path: docker, Args: []string{"info", "--format", infoFormat}, Stdout: &stdout, Stderr: &stderr}
 	if err := c.exec.Run(ctx, info); err != nil {
-		return fmt.Errorf("Docker is installed but the daemon is unavailable; %s: %s", daemonLauncher(c.platform), strings.TrimSpace(output.String()))
-	}
-	return nil
-}
-
-// ImageExists reports whether image is in the local image store.
-func (c *Client) ImageExists(ctx context.Context, image string) bool {
-	return c.exec.Run(ctx, system.Command{Path: "docker", Args: []string{"image", "inspect", image}}) == nil
-}
-
-// Build writes the build context to a temporary directory, runs docker build,
-// and removes the directory again.
-func (c *Client) Build(ctx context.Context, spec plan.BuildSpec) error {
-	if err := c.Check(ctx); err != nil {
-		return err
-	}
-	docker, err := c.exec.LookPath("docker")
-	if err != nil {
-		return fmt.Errorf("Docker is not installed or not on PATH: %w", err)
-	}
-	dir, err := c.fs.MkdirTemp("", "caged-runtime-")
-	if err != nil {
-		return fmt.Errorf("create temporary build directory: %w", err)
-	}
-	defer c.fs.RemoveAll(dir)
-	for _, file := range spec.Files {
-		if err := c.fs.WriteFile(filepath.Join(dir, file.Name), file.Data, file.Mode); err != nil {
-			return fmt.Errorf("write embedded %s: %w", file.Label, err)
+		output := strings.TrimSpace(stderr.String())
+		if output == "" {
+			output = strings.TrimSpace(stdout.String())
+		}
+		cause := err
+		if output != "" {
+			cause = errors.New(output)
+		}
+		return engine.DaemonInfo{}, &engine.Error{
+			Kind:    engine.KindDaemonDown,
+			Message: "Docker is installed but the daemon is unavailable; " + daemonLauncher(c.platform),
+			Err:     cause,
 		}
 	}
-	return c.exec.Run(ctx, system.Command{
+	return parseInfo(docker, stdout.String())
+}
+
+// InspectImage returns the facts about a local image. A missing image is an
+// engine.KindImageNotFound error.
+func (c *Client) InspectImage(ctx context.Context, ref string) (engine.ImageInfo, error) {
+	docker, err := c.dockerPath()
+	if err != nil {
+		return engine.ImageInfo{}, err
+	}
+	var stdout, stderr bytes.Buffer
+	inspect := system.Command{Path: docker, Args: []string{"image", "inspect", ref}, Stdout: &stdout, Stderr: &stderr}
+	if err := c.exec.Run(ctx, inspect); err != nil {
+		if looksLikeMissingImage(stderr.String()) {
+			return engine.ImageInfo{}, &engine.Error{Kind: engine.KindImageNotFound, Message: "image " + ref + " not found", Err: err}
+		}
+		return engine.ImageInfo{}, fmt.Errorf("inspect image %s: %s: %w", ref, strings.TrimSpace(stderr.String()), err)
+	}
+	return parseInspect(stdout.Bytes())
+}
+
+// BuildImage writes the build context to a temporary directory, runs docker
+// build with the spec's labels, and removes the directory again. It returns the
+// ID of the new image, which docker writes to an --iidfile. A failure to remove
+// the directory is returned when the build itself succeeded.
+func (c *Client) BuildImage(ctx context.Context, spec plan.BuildSpec) (id string, err error) {
+	docker, err := c.dockerPath()
+	if err != nil {
+		return "", err
+	}
+	dir, err := c.fs.MkdirTemp("", spec.ContextName+"-")
+	if err != nil {
+		return "", fmt.Errorf("create temporary build directory: %w", err)
+	}
+	defer func() {
+		if removeErr := c.fs.RemoveAll(dir); removeErr != nil && err == nil {
+			err = errors.Join(fmt.Errorf("remove temporary build directory: %w", removeErr))
+		}
+		if err != nil {
+			id = ""
+		}
+	}()
+	for _, file := range spec.Files {
+		if err := c.fs.WriteFile(filepath.Join(dir, file.Name), file.Data, file.Mode); err != nil {
+			return "", fmt.Errorf("write build file %s: %w", file.Label, err)
+		}
+	}
+	idFile := filepath.Join(dir, "image-id")
+	err = c.exec.Run(ctx, system.Command{
 		Path:   docker,
-		Args:   buildArgs(spec, dir),
+		Args:   buildArgs(spec, dir, idFile),
 		Stdin:  c.stdio.In,
 		Stdout: c.stdio.Out,
 		Stderr: c.stdio.Err,
 	})
+	if err != nil {
+		return "", err
+	}
+	data, err := c.fs.ReadFile(idFile)
+	if err != nil {
+		return "", fmt.Errorf("read the new image ID: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
-// Run starts an interactive, disposable container and waits for it to exit.
-// A non-zero container exit is returned unchanged so its code can be passed on.
-func (c *Client) Run(ctx context.Context, spec plan.RunSpec) error {
-	if err := c.Check(ctx); err != nil {
+// RemoveImage deletes a local image by ID, or removes one tag by repository:tag,
+// never with -f. An image that a
+// container or another tag still uses is an engine.KindImageInUse error.
+func (c *Client) RemoveImage(ctx context.Context, id string) error {
+	docker, err := c.dockerPath()
+	if err != nil {
 		return err
 	}
-	docker, err := c.exec.LookPath("docker")
+	var stderr bytes.Buffer
+	remove := system.Command{Path: docker, Args: []string{"image", "rm", id}, Stderr: &stderr}
+	if err := c.exec.Run(ctx, remove); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if looksLikeMissingImage(message) {
+			return &engine.Error{Kind: engine.KindImageNotFound, Message: message, Err: err}
+		}
+		if looksLikeImageInUse(message) {
+			return &engine.Error{Kind: engine.KindImageInUse, Message: message, Err: err}
+		}
+		return fmt.Errorf("remove image %s: %s: %w", id, message, err)
+	}
+	return nil
+}
+
+// ReadImageFile returns the contents of a file inside a local image. It runs
+// `docker run --rm --entrypoint cat <ref> <path>`, which starts no agent.
+func (c *Client) ReadImageFile(ctx context.Context, ref, path string) ([]byte, error) {
+	docker, err := c.dockerPath()
 	if err != nil {
-		return fmt.Errorf("docker not found, is Docker installed and running?: %w", err)
+		return nil, err
+	}
+	var stdout, stderr bytes.Buffer
+	read := system.Command{Path: docker, Args: []string{"run", "--rm", "--entrypoint", "cat", ref, path}, Stdout: &stdout, Stderr: &stderr}
+	if err := c.exec.Run(ctx, read); err != nil {
+		return nil, fmt.Errorf("read %s from image %s: %s: %w", path, ref, strings.TrimSpace(stderr.String()), err)
+	}
+	return stdout.Bytes(), nil
+}
+
+// ProbeMount checks that docker can mount m read-only into a container, the way
+// a run would, by starting a container that does nothing. On macOS, a path
+// that Docker Desktop does not share gets the File Sharing hint.
+func (c *Client) ProbeMount(ctx context.Context, ref string, m plan.Mount) error {
+	docker, err := c.dockerPath()
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	args := []string{"run", "--rm", "-v", m.HostPath + ":" + m.ContainerPath + ":ro", "--entrypoint", "true", ref}
+	if err := c.exec.Run(ctx, system.Command{Path: docker, Args: args, Stderr: &stderr}); err != nil {
+		if hinted := sharedPathHint(c.platform, stderr.String(), err); hinted != nil {
+			return hinted
+		}
+		return fmt.Errorf("%s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}
+
+// ListImages lists local images, either those with a label (q.Label is "key"
+// or "key=value") or those in a repository (q.Reference).
+func (c *Client) ListImages(ctx context.Context, q engine.ImageQuery) ([]engine.ImageSummary, error) {
+	docker, err := c.dockerPath()
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"image", "ls"}
+	if q.Label != "" {
+		args = append(args, "--filter", "label="+q.Label)
+	}
+	if q.Reference != "" {
+		args = append(args, q.Reference)
+	}
+	args = append(args, "--format", "{{json .}}")
+	var stdout, stderr bytes.Buffer
+	if err := c.exec.Run(ctx, system.Command{Path: docker, Args: args, Stdout: &stdout, Stderr: &stderr}); err != nil {
+		return nil, fmt.Errorf("list images: %s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+	return parseImageList(stdout.Bytes())
+}
+
+// RunContainer starts an interactive, disposable container and waits for it to
+// exit. A non-zero container exit is returned unchanged so its code can be
+// passed on.
+func (c *Client) RunContainer(ctx context.Context, spec plan.RunSpec) error {
+	docker, err := c.dockerPath()
+	if err != nil {
+		return err
 	}
 	var stderr bytes.Buffer
 	err = c.exec.Run(ctx, system.Command{
@@ -111,7 +243,7 @@ func (c *Client) Run(ctx context.Context, spec plan.RunSpec) error {
 		Stderr: io.MultiWriter(c.stdio.Err, &stderr),
 	})
 	if err != nil {
-		return explainRunError(c.platform, stderr.String(), err)
+		return classifyRunError(c.platform, spec, stderr.String(), err)
 	}
 	return nil
 }

@@ -9,13 +9,13 @@ WARNING: allowlisted agent credentials are available inside the container.
 docker: Error response from daemon: Mounts denied: the path is not shared from the host.
 exit status 125
 === docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
 image
 inspect
 caged-runtime:latest
----
-info
---format
-{{.ServerVersion}}
 ---
 run
 -it

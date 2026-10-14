@@ -38,31 +38,31 @@ type Agent struct {
 
 // AuthStrategy describes how an agent can authenticate in the container.
 // Keychain extraction is intentionally unsupported; host-provided tokens and
-// mounted credential files are the v1 mechanisms.
+// mounted config directories are the v1 mechanisms.
 type AuthStrategy struct {
-	Environment         []string
-	CredentialPaths     []string
-	SupportsDeviceLogin bool
+	Environment []string
 }
 
-// LaunchCommand returns the container command that starts the agent. A
-// non-nil prompt is passed as exactly one argument in the agent's prompt style.
-func (a Agent) LaunchCommand(prompt *string) ([]string, error) {
+// LaunchCommand returns the container command that starts the agent: the
+// command, then the prompt part, then a copy of extra. A non-nil prompt is
+// passed as exactly one argument in the agent's prompt style. extra is added
+// unchanged for every prompt style, including agents that take no prompt.
+func (a Agent) LaunchCommand(prompt *string, extra []string) ([]string, error) {
 	command := append([]string(nil), a.Command...)
-	if prompt == nil {
-		return command, nil
-	}
-	switch a.Prompt {
-	case PromptPositional:
-		return append(command, *prompt), nil
-	case PromptFlag:
-		if a.PromptFlag == "" {
-			return nil, fmt.Errorf("%s prompt flag is not configured", a.Name)
+	if prompt != nil {
+		switch a.Prompt {
+		case PromptPositional:
+			command = append(command, *prompt)
+		case PromptFlag:
+			if a.PromptFlag == "" {
+				return nil, fmt.Errorf("%s prompt flag is not configured", a.Name)
+			}
+			command = append(command, a.PromptFlag, *prompt)
+		default:
+			return nil, fmt.Errorf("%s does not support prompt launch", a.Name)
 		}
-		return append(command, a.PromptFlag, *prompt), nil
-	default:
-		return nil, fmt.Errorf("%s does not support prompt launch", a.Name)
 	}
+	return append(command, extra...), nil
 }
 
 // ValidateEnvName rejects names that are not valid environment variable names.
@@ -131,6 +131,5 @@ func (a Agent) clone() Agent {
 		a.ConfigPaths[i].MaskPaths = append([]string(nil), a.ConfigPaths[i].MaskPaths...)
 	}
 	a.Auth.Environment = append([]string(nil), a.Auth.Environment...)
-	a.Auth.CredentialPaths = append([]string(nil), a.Auth.CredentialPaths...)
 	return a
 }

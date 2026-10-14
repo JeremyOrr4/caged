@@ -16,14 +16,17 @@ config: refused $ROOT/home (config path resolves to the home directory)
 config: refused $ROOT/outside/copilot (resolves outside home)
 config: refused $ROOT/home/.gemini/current-settings.json (symlinks and special files are excluded from config mounts)
 config: refused $ROOT/home/.config/pi (resolves outside home)
+command: ["bash"]
+image: no extension (~/.config/caged/image.json not found)
+image: caged-runtime:latest is current (runtime $RUNTIME_HASH12)
 === docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
 image
 inspect
 caged-runtime:latest
----
-info
---format
-{{.ServerVersion}}
 ---
 run
 -it

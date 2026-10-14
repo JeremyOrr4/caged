@@ -4,6 +4,6 @@ error: Docker is not installed or not on PATH: exec: "docker": executable file n
 leftover temp entries: 0
 === stdout
 === stderr
-Runtime image caged-runtime:latest not found; building it first...
+WARNING: allowlisted agent credentials are available inside the container.
 Docker is not installed or not on PATH: exec: "docker": executable file not found in $PATH
 === docker invocations

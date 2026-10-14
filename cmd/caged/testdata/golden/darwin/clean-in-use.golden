@@ -1,0 +1,51 @@
+args: ["clean"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+kept caged-runtime:ext: in use by a container (remove it with docker rm first)
+kept caged-runtime:latest: in use by a container (remove it with docker rm first)
+kept <untagged> sha256:1a2b3c4d5e6f: in use by a container (remove it with docker rm first)
+kept caged-runtime:old: in use by a container (remove it with docker rm first)
+=== stderr
+=== docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
+image
+ls
+--filter
+label=io.github.jeremyorr4.caged.role=extension
+--format
+{{json .}}
+---
+image
+ls
+--filter
+label=io.github.jeremyorr4.caged.role=runtime
+--format
+{{json .}}
+---
+image
+ls
+caged-runtime
+--format
+{{json .}}
+---
+image
+rm
+caged-runtime:ext
+---
+image
+rm
+caged-runtime:latest
+---
+image
+rm
+sha256:1a2b3c4d5e6f7a8b
+---
+image
+rm
+caged-runtime:old
+---

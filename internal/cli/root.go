@@ -1,20 +1,10 @@
 package cli
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/JeremyOrr4/caged/internal/agent"
 	"github.com/JeremyOrr4/caged/internal/app"
-	"github.com/JeremyOrr4/caged/internal/runtime"
 	"github.com/spf13/cobra"
 )
-
-// Service runs and builds caged containers. app.Service implements it.
-type Service interface {
-	Run(ctx context.Context, request app.Request) error
-	Build(ctx context.Context, noCache bool) error
-}
 
 // Agents finds supported agents. agent.Registry implements it.
 type Agents interface {
@@ -23,40 +13,58 @@ type Agents interface {
 }
 
 // NewRootCmd creates the root caged command. It only turns arguments and
-// flags into an app.Request; agents and service do the work.
-func NewRootCmd(version string, agents Agents, service Service) *cobra.Command {
+// flags into app requests; agents and services do the work.
+func NewRootCmd(version string, agents Agents, services Services) *cobra.Command {
 	var flags app.Request
 
 	cmd := &cobra.Command{
-		Use:           "caged [agent [prompt]]",
+		Use:           "caged [agent [prompt]] [-- agent-args...]",
 		Short:         "Run AI coding agents in a disposable Docker container",
 		Long:          "Run a bash shell or a supported AI coding agent in a disposable Docker container",
-		Args:          cobra.MaximumNArgs(2),
+		Args:          positionalArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			// While completing, cobra reports the end of args as the position of
+			// "--", so ArgsLenAtDash cannot tell "after --" apart from "after the
+			// agent". Both mean the agent is named, so nothing more is suggested.
 			if len(args) > 0 {
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
-			return agents.Names(), cobra.ShellCompDirectiveNoFileComp
+			names := agents.Names()
+			suggestions := make([]string, 0, len(names))
+			for _, name := range names {
+				suggestion := name
+				if definition, err := agents.Lookup(name); err == nil && definition.Description != "" {
+					suggestion += "\t" + definition.Description
+				}
+				suggestions = append(suggestions, suggestion)
+			}
+			return suggestions, cobra.ShellCompDirectiveNoFileComp
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			request, err := buildRequest(agents, flags, args)
+			positional, agentArgs := splitArgs(cmd, args)
+			request, err := buildRequest(agents, flags, positional)
 			if err != nil {
 				return err
 			}
-			return service.Run(cmd.Context(), request)
+			request.AgentArgs = agentArgs
+			return services.Run.Run(cmd.Context(), request)
 		},
 	}
 
-	cmd.AddCommand(newBuildCmd(service))
-	cmd.AddCommand(newListCmd(agents))
+	cmd.AddCommand(newBuildCmd(services.Build))
+	cmd.AddCommand(newDoctorCmd(services.Doctor))
+	cmd.AddCommand(newListCmd(services.List))
+	cmd.AddCommand(newCleanCmd(services.Clean))
 	cmd.Flags().BoolVar(&flags.NoMount, "no-mount", false, "do not mount the current working directory")
 	cmd.Flags().StringVarP(&flags.WorkDir, "workdir", "w", "", "mount this host directory at /workspace/<folder-name>")
 	cmd.Flags().BoolVar(&flags.AllowBroadMount, "allow-broad-mount", false, "allow mounting the filesystem root or home directory")
 	cmd.Flags().BoolVar(&flags.NoConfig, "no-config", false, "do not mount any host AI config into the container")
 	cmd.Flags().BoolVar(&flags.Verbose, "verbose", false, "print which config files and environment names are passed")
+	cmd.Flags().StringArrayVarP(&flags.Ports, "publish", "p", nil, "publish a container port on 127.0.0.1: PORT or HOST_PORT:CONTAINER_PORT (repeatable)")
 	cmd.Flags().StringArrayVar(&flags.EnvVars, "env", nil, "pass a host environment variable into the container by NAME only")
+	cmd.SetFlagErrorFunc(flagErrorWithHint)
 	cmd.Version = version
 	return cmd
 }
@@ -83,41 +91,4 @@ func buildRequest(agents Agents, flags app.Request, args []string) (app.Request,
 		request.Prompt = &prompt
 	}
 	return request, nil
-}
-
-func newBuildCmd(service Service) *cobra.Command {
-	var noCache bool
-	cmd := &cobra.Command{
-		Use:          "build",
-		Short:        "Build the runtime image",
-		Args:         cobra.NoArgs,
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := service.Build(cmd.Context(), noCache); err != nil {
-				return err
-			}
-			_, err := fmt.Fprintln(cmd.OutOrStdout(), "built runtime image", runtime.Image)
-			return err
-		},
-	}
-	cmd.Flags().BoolVar(&noCache, "no-cache", false, "build without using the Docker cache")
-	return cmd
-}
-
-func newListCmd(agents Agents) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:          "list",
-		Short:        "List supported AI agents",
-		Args:         cobra.NoArgs,
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			for _, name := range agents.Names() {
-				if _, err := fmt.Fprintln(cmd.OutOrStdout(), name); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	}
-	return cmd
 }

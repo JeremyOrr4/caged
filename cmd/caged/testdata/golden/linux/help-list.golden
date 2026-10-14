@@ -3,7 +3,8 @@ exit code: 0
 error: <nil>
 leftover temp entries: 0
 === stdout
-List supported AI agents
+List the supported AI agents, the host config that a run would mount for each, and which of
+its credential environment variables are set. Only names are shown, never values.
 
 Usage:
   caged list [flags]

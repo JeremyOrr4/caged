@@ -8,13 +8,13 @@ fake docker run output
 WARNING: allowlisted agent credentials are available inside the container.
 exit status 7
 === docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
 image
 inspect
 caged-runtime:latest
----
-info
---format
-{{.ServerVersion}}
 ---
 run
 -it

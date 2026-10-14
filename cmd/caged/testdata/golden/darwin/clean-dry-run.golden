@@ -1,0 +1,35 @@
+args: ["clean" "--dry-run"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+would remove caged-runtime:ext (412MB)
+would remove caged-runtime:latest (3.1GB)
+would remove <untagged> sha256:1a2b3c4d5e6f (3.0GB)
+would remove caged-runtime:old (2.9GB)
+=== stderr
+=== docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
+image
+ls
+--filter
+label=io.github.jeremyorr4.caged.role=extension
+--format
+{{json .}}
+---
+image
+ls
+--filter
+label=io.github.jeremyorr4.caged.role=runtime
+--format
+{{json .}}
+---
+image
+ls
+caged-runtime
+--format
+{{json .}}
+---

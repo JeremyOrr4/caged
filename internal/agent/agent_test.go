@@ -165,7 +165,7 @@ func TestLaunchCommandWithoutPromptUsesRegistryCommand(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := definition.LaunchCommand(nil)
+		got, err := definition.LaunchCommand(nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -197,7 +197,7 @@ func TestLaunchCommandPromptStyles(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := tt.agent.LaunchCommand(&prompt)
+			got, err := tt.agent.LaunchCommand(&prompt, nil)
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("LaunchCommand() error = %v, want %q", err, tt.wantErr)
@@ -232,4 +232,52 @@ func TestValidEnvNameMatchesDocumentedPattern(t *testing.T) {
 	if err := ValidateEnvName("bad-name"); err == nil || err.Error() != `invalid env name "bad-name"; must match ^[A-Za-z_][A-Za-z0-9_]*$` {
 		t.Errorf("ValidateEnvName(bad-name) error = %v", err)
 	}
+}
+
+func TestLaunchCommandAppendsExtraArgsAfterThePrompt(t *testing.T) {
+	t.Parallel()
+
+	prompt := "fix tests"
+	extra := []string{"--model", "opus", "--add-dir", "../lib"}
+	tests := []struct {
+		name   string
+		agent  Agent
+		prompt *string
+		want   []string
+	}{
+		{name: "positional with prompt", agent: Agent{Name: "a", Command: []string{"a"}, Prompt: PromptPositional}, prompt: &prompt, want: []string{"a", "fix tests", "--model", "opus", "--add-dir", "../lib"}},
+		{name: "positional without prompt", agent: Agent{Name: "a", Command: []string{"a"}, Prompt: PromptPositional}, want: []string{"a", "--model", "opus", "--add-dir", "../lib"}},
+		{name: "flag style with prompt", agent: Agent{Name: "b", Command: []string{"b", "run"}, Prompt: PromptFlag, PromptFlag: "-p"}, prompt: &prompt, want: []string{"b", "run", "-p", "fix tests", "--model", "opus", "--add-dir", "../lib"}},
+		{name: "flag style without prompt", agent: Agent{Name: "b", Command: []string{"b", "run"}, Prompt: PromptFlag, PromptFlag: "-p"}, want: []string{"b", "run", "--model", "opus", "--add-dir", "../lib"}},
+		{name: "an agent without a prompt style still takes extra args", agent: Agent{Name: "gh", Command: []string{"gh"}}, want: []string{"gh", "--model", "opus", "--add-dir", "../lib"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			args := append([]string(nil), extra...)
+			got, err := tt.agent.LaunchCommand(tt.prompt, args)
+			if err != nil || !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("LaunchCommand() = %q, %v; want %q", got, err, tt.want)
+			}
+			got[len(got)-1] = "changed"
+			if args[len(args)-1] != "../lib" {
+				t.Fatal("LaunchCommand() shares its result with the extra args")
+			}
+		})
+	}
+	t.Run("no prompt style still rejects a prompt, with or without extra args", func(t *testing.T) {
+		t.Parallel()
+		gh := Agent{Name: "gh", Command: []string{"gh"}}
+		if _, err := gh.LaunchCommand(&prompt, extra); err == nil || err.Error() != "gh does not support prompt launch" {
+			t.Fatalf("LaunchCommand() error = %v", err)
+		}
+	})
+	t.Run("extra args are kept verbatim", func(t *testing.T) {
+		t.Parallel()
+		odd := []string{"$(id)", `"q"`, "", "--", "-p"}
+		got, err := Agent{Name: "a", Command: []string{"a"}}.LaunchCommand(nil, odd)
+		if want := append([]string{"a"}, odd...); err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("LaunchCommand() = %q, %v; want %q", got, err, want)
+		}
+	})
 }

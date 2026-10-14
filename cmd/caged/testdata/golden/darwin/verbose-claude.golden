@@ -17,14 +17,17 @@ config: pass $ROOT/home/.gitconfig -> /home/caged/.gitconfig
 config: refused $ROOT/home/.gemini/current-settings.json (symlinks and special files are excluded from config mounts)
 config: refused $ROOT/home/.config/pi (resolves outside home)
 env: pass ANTHROPIC_API_KEY
+command: ["claude"]
+image: no extension (~/.config/caged/image.json not found)
+image: caged-runtime:latest is current (runtime $RUNTIME_HASH12)
 === docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
 image
 inspect
 caged-runtime:latest
----
-info
---format
-{{.ServerVersion}}
 ---
 run
 -it

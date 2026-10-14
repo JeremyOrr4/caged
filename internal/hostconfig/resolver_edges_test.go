@@ -72,7 +72,7 @@ func TestResolveRefusesUnresolvableHome(t *testing.T) {
 
 	fsys := faultyFS{evalErr: map[string]bool{"/no/such/home": true}}
 	got := NewResolver(fsys, fakeEnv{}, agent.Builtin().All(), DefaultSharedFiles()).Resolve("/no/such/home/")
-	want := plan.ConfigReport{Refused: []string{"/no/such/home (home cannot be resolved)"}}
+	want := plan.ConfigReport{Refused: []plan.Refusal{{Path: "/no/such/home", Reason: "home cannot be resolved"}}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve() = %+v, want %+v", got, want)
 	}
@@ -131,7 +131,7 @@ func TestResolveRefusesUnresolvableConfigPath(t *testing.T) {
 	gemini := filepath.Join(home, ".gemini")
 	fsys := faultyFS{evalErr: map[string]bool{gemini: true}}
 	report := NewResolver(fsys, fakeEnv{}, agent.Builtin().All(), nil).Resolve(home)
-	if want := []string{gemini + " (unresolvable symlink)"}; !reflect.DeepEqual(report.Refused, want) {
+	if want := []string{gemini + " (unresolvable symlink)"}; !reflect.DeepEqual(refusedStrings(report.Refused), want) {
 		t.Fatalf("Refused = %v, want %v", report.Refused, want)
 	}
 }
@@ -154,12 +154,12 @@ func TestResolveReportsUninspectableEntries(t *testing.T) {
 		filepath.Join(gemini, "link") + " (symlinks and special files are excluded from config mounts)",
 		filepath.Join(gemini, "sub") + " (cannot inspect config entry safely)",
 	}
-	if !reflect.DeepEqual(report.Refused, wantRefused) || len(report.Mounts) != 0 {
+	if !reflect.DeepEqual(refusedStrings(report.Refused), wantRefused) || len(report.Mounts) != 0 {
 		t.Fatalf("Resolve() = %+v, want refused %v and no mounts", report, wantRefused)
 	}
 
 	root := filepath.Join(resolvedHome, ".gh")
-	if mounts, refused := collectSafeMounts(faultyFS{lstatErr: map[string]bool{root: true}}, root); mounts != nil || !reflect.DeepEqual(refused, []string{root + " (cannot inspect config root safely)"}) {
+	if mounts, refused := collectSafeMounts(faultyFS{lstatErr: map[string]bool{root: true}}, root); mounts != nil || !reflect.DeepEqual(refusedStrings(refused), []string{root + " (cannot inspect config root safely)"}) {
 		t.Fatalf("collectSafeMounts() = %v, %v", mounts, refused)
 	}
 }
@@ -174,7 +174,7 @@ func TestResolveMountsSingleFileConfigAndRejectsBadMasks(t *testing.T) {
 		{Name: "notdir", Command: []string{"notdir"}, ConfigPaths: []agent.ConfigPath{{HostPath: "masked-file", ContainerPath: "masked-file", MaskPaths: []string{"tmp"}}}},
 	}
 	report := NewResolver(system.FS{}, fakeEnv{}, agents, nil).Resolve(home)
-	wantMounts := []plan.ConfigMount{{Agent: "file", Name: "tool.json", HostPath: filepath.Join(resolvedHome, "tool.json"), DestPath: "/home/caged/tool.json"}}
+	wantMounts := []plan.ConfigMount{{Agent: "file", Name: "tool.json", HostPath: filepath.Join(resolvedHome, "tool.json"), DestPath: "/home/caged/tool.json", Root: filepath.Join(home, "tool.json")}}
 	if !reflect.DeepEqual(report.Mounts, wantMounts) {
 		t.Fatalf("Mounts = %+v, want %+v", report.Mounts, wantMounts)
 	}
@@ -182,7 +182,7 @@ func TestResolveMountsSingleFileConfigAndRejectsBadMasks(t *testing.T) {
 		filepath.Join(home, "masked") + ` (invalid config mask path "../outside")`,
 		filepath.Join(home, "masked-file") + " (masked config root must be a directory)",
 	}
-	if !reflect.DeepEqual(report.Refused, wantRefused) {
+	if !reflect.DeepEqual(refusedStrings(report.Refused), wantRefused) {
 		t.Fatalf("Refused = %v, want %v", report.Refused, wantRefused)
 	}
 }
@@ -224,7 +224,7 @@ func TestSharedFilesAreData(t *testing.T) {
 		{Path: ".absent", Description: "shared absent"},
 	}
 	report := NewResolver(system.FS{}, fakeEnv{}, nil, shared).Resolve(home)
-	wantMounts := []plan.ConfigMount{{Agent: "shared", Name: ".npmrc", HostPath: filepath.Join(resolvedHome, ".npmrc"), DestPath: "/home/caged/.npmrc"}}
+	wantMounts := []plan.ConfigMount{{Agent: SharedOwner, Name: ".npmrc", HostPath: filepath.Join(resolvedHome, ".npmrc"), DestPath: "/home/caged/.npmrc", Root: filepath.Join(home, ".npmrc")}}
 	if !reflect.DeepEqual(report.Mounts, wantMounts) {
 		t.Fatalf("Mounts = %+v, want %+v", report.Mounts, wantMounts)
 	}
@@ -232,7 +232,7 @@ func TestSharedFilesAreData(t *testing.T) {
 		filepath.Join(home, ".npmrc-dir") + " (shared npm config must be a regular file)",
 		filepath.Join(home, ".escape") + " (resolves outside home or cannot be resolved)",
 	}
-	if !reflect.DeepEqual(report.Refused, wantRefused) {
+	if !reflect.DeepEqual(refusedStrings(report.Refused), wantRefused) {
 		t.Fatalf("Refused = %v, want %v", report.Refused, wantRefused)
 	}
 	if want := []string{filepath.Join(home, ".absent")}; !reflect.DeepEqual(report.Missing, want) {
@@ -260,5 +260,24 @@ func TestIsWithin(t *testing.T) {
 	}
 	if strings.Contains(containerHome, "\\") {
 		t.Fatal("container paths must use forward slashes")
+	}
+}
+
+// refusedStrings formats refusals as "path (reason)" for easy comparison.
+func refusedStrings(refused []plan.Refusal) []string {
+	var out []string
+	for _, refusal := range refused {
+		out = append(out, refusal.String())
+	}
+	return out
+}
+
+func TestNoAgentUsesTheSharedOwnerName(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range agent.Builtin().Names() {
+		if name == SharedOwner {
+			t.Errorf("agent %q collides with the shared config owner %q", name, SharedOwner)
+		}
 	}
 }

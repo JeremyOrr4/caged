@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # target-branch dev: by default Dependabot targets the default branch (main),
+  # which pr-policy rejects.
+  - package-ecosystem: gomod
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+  # The Ubuntu base image is pinned by digest in the runtime Dockerfile. A digest
+  # bump changes the runtime hash, so users get one automatic rebuild.
+  - package-ecosystem: docker
+    directory: /internal/images
+    target-branch: dev
+    schedule:
+      interval: weekly

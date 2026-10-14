@@ -1,0 +1,27 @@
+args: ["--verbose" "--no-mount" "--no-config"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+fake docker run output
+=== stderr
+command: ["bash"]
+image: no extension (~/.config/caged/image.json not found)
+image: caged-runtime:latest is current (runtime $RUNTIME_HASH12)
+=== docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
+image
+inspect
+caged-runtime:latest
+---
+run
+-it
+--rm
+--user
+$UID:$GID
+caged-runtime:latest
+bash
+---

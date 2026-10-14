@@ -1,0 +1,8 @@
+args: ["--" "--resume"]
+exit code: 1
+error: arguments after -- are passed to an agent; name one first, e.g. caged claude -- --resume
+leftover temp entries: 0
+=== stdout
+=== stderr
+arguments after -- are passed to an agent; name one first, e.g. caged claude -- --resume
+=== docker invocations

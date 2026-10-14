@@ -94,7 +94,7 @@ func TestConfigOverrideCannotMountHomeDirectory(t *testing.T) {
 	}
 	foundRefusal := false
 	for _, refusal := range report.Refused {
-		if strings.Contains(refusal, "home directory") {
+		if strings.Contains(refusal.String(), "home directory") {
 			foundRefusal = true
 		}
 	}
@@ -216,7 +216,7 @@ func TestCodexHomeMountPreservesDirectoryAndMasksRuntimeEntries(t *testing.T) {
 		t.Fatalf("Codex runtime mask paths = %v", codexMount.MaskPaths)
 	}
 	for _, refused := range report.Refused {
-		if strings.Contains(refused, codexHome) {
+		if strings.Contains(refused.String(), codexHome) {
 			t.Fatalf("known masked Codex runtime entries were refused: %+v", report.Refused)
 		}
 	}

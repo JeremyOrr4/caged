@@ -19,14 +19,16 @@ const modulePath = "github.com/JeremyOrr4/caged"
 // imports an adapter, and agent and system import nothing from caged.
 func allowedImports() map[string][]string {
 	return map[string][]string{
-		"cmd/caged":           {"internal/agent", "internal/app", "internal/cli", "internal/docker", "internal/hostconfig", "internal/project", "internal/system"},
-		"internal/cli":        {"internal/agent", "internal/app", "internal/runtime"},
-		"internal/app":        {"internal/agent", "internal/plan", "internal/runtime"},
-		"internal/docker":     {"internal/plan", "internal/system"},
+		"cmd/caged":           {"internal/agent", "internal/app", "internal/cli", "internal/docker", "internal/extension", "internal/hostconfig", "internal/project", "internal/system"},
+		"internal/cli":        {"internal/agent", "internal/app"},
+		"internal/app":        {"internal/agent", "internal/engine", "internal/images", "internal/plan"},
+		"internal/docker":     {"internal/engine", "internal/plan", "internal/system"},
+		"internal/engine":     {},
+		"internal/extension":  {"internal/plan"},
 		"internal/hostconfig": {"internal/agent", "internal/plan"},
 		"internal/project":    {"internal/plan"},
-		"internal/runtime":    {"internal/plan"},
-		"internal/plan":       {"internal/agent"},
+		"internal/images":     {"internal/plan"},
+		"internal/plan":       {},
 		"internal/agent":      {},
 		"internal/system":     {},
 	}

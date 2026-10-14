@@ -1,0 +1,21 @@
+args: ["doctor"]
+exit code: 1
+error: doctor: 1 checks failed
+leftover temp entries: 0
+=== stdout
+caged test (linux/amd64)
+PASS  docker     installed
+FAIL  daemon     Docker is installed but the daemon is unavailable; start the Docker daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?
+SKIP  image      needs daemon
+PASS  extension  no extension file
+SKIP  ext-image  needs daemon
+SKIP  arch       needs daemon
+SKIP  project    needs daemon
+SKIP  versions   needs daemon
+=== stderr
+doctor: 1 checks failed
+=== docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---

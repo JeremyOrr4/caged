@@ -10,6 +10,6 @@ func claude() Agent {
 			{HostPath: ".claude", ContainerPath: ".claude", Writable: true, EnvOverride: "CLAUDE_CONFIG_DIR"},
 		},
 		Prompt: PromptPositional,
-		Auth:   AuthStrategy{Environment: []string{"ANTHROPIC_API_KEY"}, CredentialPaths: []string{".claude/.credentials.json"}},
+		Auth:   AuthStrategy{Environment: []string{"ANTHROPIC_API_KEY"}},
 	}
 }

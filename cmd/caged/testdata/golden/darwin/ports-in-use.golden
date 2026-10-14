@@ -1,0 +1,59 @@
+args: ["-p" "8080:3000" "claude"]
+exit code: 125
+error: host port 8080 is already in use on 127.0.0.1; stop the process using it or pick another host port, e.g. -p 8081:3000: exit status 125
+leftover temp entries: 0
+=== stdout
+fake docker run output
+=== stderr
+WARNING: allowlisted agent credentials are available inside the container.
+docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint x: failed to bind host port 127.0.0.1:8080/tcp: address already in use
+host port 8080 is already in use on 127.0.0.1; stop the process using it or pick another host port, e.g. -p 8081:3000: exit status 125
+=== docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
+image
+inspect
+caged-runtime:latest
+---
+run
+-it
+--rm
+-p
+127.0.0.1:8080:3000
+-v
+$ROOT/work/project:/workspace/project
+-w
+/workspace/project
+-v
+$ROOT/home/.claude:/home/caged/.claude
+-v
+$ROOT/home/.codex:/home/caged/.codex
+--tmpfs
+/home/caged/.codex/app-server-control
+--tmpfs
+/home/caged/.codex/app-server-daemon
+--tmpfs
+/home/caged/.codex/ipc
+--tmpfs
+/home/caged/.codex/packages/app-server-daemon
+--tmpfs
+/home/caged/.codex/tmp/arg0
+-v
+$ROOT/home/.copilot:/home/caged/.copilot
+-v
+$ROOT/home/.gemini/oauth_creds.json:/home/caged/.gemini/oauth_creds.json
+-v
+$ROOT/home/.gemini/settings.json:/home/caged/.gemini/settings.json
+-v
+$ROOT/home/.config/gh:/home/caged/.config/gh
+-v
+$ROOT/home/.pi:/home/caged/.pi
+-v
+$ROOT/home/.gitconfig:/home/caged/.gitconfig:ro
+-e
+CAGED_RETURN_TO_SHELL=1
+caged-runtime:latest
+claude
+---

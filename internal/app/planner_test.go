@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -69,13 +70,13 @@ func TestPlannerCombinesMountsConfigsAndEnv(t *testing.T) {
 	configs := &fakeConfigs{report: plan.ConfigReport{
 		Mounts:  []plan.ConfigMount{{Agent: "claude", Name: ".claude", HostPath: "/Users/dev/.claude", DestPath: "/home/caged/.claude", Writable: true}},
 		Missing: []string{"/Users/dev/.codex"},
-		Refused: []string{"/Users/dev/.pi (resolves outside home)"},
+		Refused: []plan.Refusal{{Path: "/Users/dev/.pi", Reason: "resolves outside home"}},
 	}}
 	var stderr strings.Builder
 	prompt := "hello"
-	spec, err := NewPlanner(env, project, configs, &stderr).Plan(Request{
+	spec, err := NewPlanner(env, project, configs).Plan(Request{
 		Agent: lookup(t, "claude"), Prompt: &prompt, Verbose: true, AllowBroadMount: true, EnvVars: []string{"EXTRA", "MISSING"},
-	})
+	}, "caged-runtime:latest", NewReporter(&stderr, true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +101,7 @@ config: refused /Users/dev/.pi (resolves outside home)
 env: pass ANTHROPIC_API_KEY
 env: pass EXTRA
 env: skipped MISSING (unset or disallowed)
+command: ["claude" "hello"]
 `
 	if stderr.String() != wantLog {
 		t.Fatalf("stderr = %q, want %q", stderr.String(), wantLog)
@@ -111,7 +113,7 @@ func TestPlannerUsesWorkDirFlagWithoutReadingCwd(t *testing.T) {
 
 	project := &fakeProject{}
 	env := &fakeEnv{home: "/home/dev", wdErr: errors.New("cwd must not be read")}
-	if _, err := NewPlanner(env, project, &fakeConfigs{}, &strings.Builder{}).Plan(Request{WorkDir: "../other", NoConfig: true}); err != nil {
+	if _, err := NewPlanner(env, project, &fakeConfigs{}).Plan(Request{WorkDir: "../other", NoConfig: true}, "img", NewReporter(io.Discard, false)); err != nil {
 		t.Fatal(err)
 	}
 	if project.gotWorkDir != "../other" {
@@ -123,7 +125,7 @@ func TestNoMountAndWorkdirAreIncompatible(t *testing.T) {
 	t.Parallel()
 
 	request := Request{NoMount: true, WorkDir: "/tmp"}
-	_, err := NewPlanner(&fakeEnv{}, &fakeProject{}, &fakeConfigs{}, &strings.Builder{}).Plan(request)
+	_, err := NewPlanner(&fakeEnv{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(io.Discard, false))
 	if err == nil || !strings.Contains(err.Error(), "cannot be used with --no-mount") {
 		t.Fatalf("Plan() error = %v, want incompatible-flags error", err)
 	}
@@ -134,7 +136,7 @@ func TestPlannerNoMountNoConfigNeedsNoHomeOrCwd(t *testing.T) {
 
 	env := &fakeEnv{homeErr: errors.New("no home"), wdErr: errors.New("no cwd")}
 	var stderr strings.Builder
-	spec, err := NewPlanner(env, &fakeProject{}, &fakeConfigs{}, &stderr).Plan(Request{NoMount: true, NoConfig: true})
+	spec, err := NewPlanner(env, &fakeProject{}, &fakeConfigs{}).Plan(Request{NoMount: true, NoConfig: true}, "img", NewReporter(&stderr, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,8 +173,137 @@ func TestPlannerErrors(t *testing.T) {
 			if project == nil {
 				project = &fakeProject{}
 			}
-			if _, err := NewPlanner(tt.env, project, &fakeConfigs{}, &strings.Builder{}).Plan(tt.request); err == nil || err.Error() != tt.want {
+			if _, err := NewPlanner(tt.env, project, &fakeConfigs{}).Plan(tt.request, "img", NewReporter(io.Discard, false)); err == nil || err.Error() != tt.want {
 				t.Fatalf("Plan() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// countingEnv counts home directory lookups.
+type countingEnv struct {
+	fakeEnv
+	homeCalls int
+}
+
+func (e *countingEnv) UserHomeDir() (string, error) {
+	e.homeCalls++
+	return e.fakeEnv.UserHomeDir()
+}
+
+func TestPlannerResolvesHomeOnce(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		request Request
+		want    int
+	}{
+		{name: "mount and config", request: Request{}, want: 1},
+		{name: "mount only", request: Request{NoConfig: true}, want: 1},
+		{name: "config only", request: Request{NoMount: true}, want: 1},
+		{name: "neither", request: Request{NoMount: true, NoConfig: true}, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := &countingEnv{fakeEnv: fakeEnv{home: "/home/dev", wd: "/home/dev/app"}}
+			if _, err := NewPlanner(env, &fakeProject{}, &fakeConfigs{}).Plan(tt.request, "img", NewReporter(io.Discard, false)); err != nil {
+				t.Fatal(err)
+			}
+			if env.homeCalls != tt.want {
+				t.Fatalf("UserHomeDir called %d times, want %d", env.homeCalls, tt.want)
+			}
+		})
+	}
+}
+
+func TestPlannerPublishedPorts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parsed ports reach the spec and are logged with --verbose", func(t *testing.T) {
+		t.Parallel()
+		var stderr strings.Builder
+		request := Request{NoMount: true, NoConfig: true, Verbose: true, Ports: []string{"3000", "8080:4000"}}
+		spec, err := NewPlanner(&fakeEnv{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(&stderr, true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []plan.Port{{HostIP: "127.0.0.1", HostPort: 3000, ContainerPort: 3000}, {HostIP: "127.0.0.1", HostPort: 8080, ContainerPort: 4000}}
+		if !reflect.DeepEqual(spec.Ports, want) {
+			t.Fatalf("Ports = %+v, want %+v", spec.Ports, want)
+		}
+		wantLog := "port: publish 127.0.0.1:3000 -> container 3000\nport: publish 127.0.0.1:8080 -> container 4000\ncommand: [\"bash\"]\n"
+		if stderr.String() != wantLog {
+			t.Fatalf("stderr = %q, want %q", stderr.String(), wantLog)
+		}
+	})
+	t.Run("port lines need --verbose", func(t *testing.T) {
+		t.Parallel()
+		var stderr strings.Builder
+		request := Request{NoMount: true, NoConfig: true, Ports: []string{"3000"}}
+		if _, err := NewPlanner(&fakeEnv{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(&stderr, false)); err != nil {
+			t.Fatal(err)
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("stderr = %q, want nothing without --verbose", stderr.String())
+		}
+	})
+	t.Run("a bad port fails before the warning and before any resolver runs", func(t *testing.T) {
+		t.Parallel()
+		var stderr strings.Builder
+		env := &fakeEnv{home: "/home/dev", wd: "/home/dev/app"}
+		project, configs := &fakeProject{}, &fakeConfigs{}
+		request := Request{Ports: []string{"70000"}}
+		_, err := NewPlanner(env, project, configs).Plan(request, "img", NewReporter(&stderr, true))
+		if err == nil || err.Error() != `invalid port "70000": 70000 is out of range 1-65535` {
+			t.Fatalf("Plan() error = %v", err)
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("stderr = %q, want no warning before a port error", stderr.String())
+		}
+		if project.gotWorkDir != "" || configs.gotHome != "" {
+			t.Fatalf("resolvers ran before the port error: project %+v, configs home %q", project, configs.gotHome)
+		}
+	})
+}
+
+func TestPlannerPassesAgentArgsAndLogsTheCommand(t *testing.T) {
+	t.Parallel()
+
+	prompt := "fix tests"
+	tests := []struct {
+		name    string
+		request Request
+		want    []string
+		wantLog string
+		wantErr string
+	}{
+		{name: "agent args after the prompt", request: Request{Agent: lookup(t, "claude"), Prompt: &prompt, AgentArgs: []string{"--model", "opus"}}, want: []string{"claude", "fix tests", "--model", "opus"}, wantLog: "env: skipped ANTHROPIC_API_KEY (unset or disallowed)\n" + `command: ["claude" "fix tests" "--model" "opus"]` + "\n"},
+		{name: "the shell is logged too", request: Request{}, want: []string{"bash"}, wantLog: `command: ["bash"]` + "\n"},
+		{name: "agent args without an agent", request: Request{AgentArgs: []string{"--resume"}}, wantErr: "agent arguments after -- need an agent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var stderr strings.Builder
+			request := tt.request
+			request.NoMount, request.NoConfig, request.Verbose = true, true, true
+			spec, err := NewPlanner(&fakeEnv{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(&stderr, true))
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("Plan() error = %v, want %q", err, tt.wantErr)
+				}
+				if strings.Contains(stderr.String(), "command:") {
+					t.Fatalf("stderr = %q, want no command line for a failed plan", stderr.String())
+				}
+				return
+			}
+			if err != nil || !reflect.DeepEqual(spec.Command, tt.want) {
+				t.Fatalf("Command = %q, %v; want %q", spec.Command, err, tt.want)
+			}
+			if stderr.String() != tt.wantLog {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), tt.wantLog)
 			}
 		})
 	}

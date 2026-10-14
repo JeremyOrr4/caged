@@ -15,8 +15,15 @@ import (
 // fakeService records the requests the CLI produces.
 type fakeService struct {
 	runs   []app.Request
-	builds []bool
+	builds []app.BuildOptions
+	built  []app.BuiltImage // what Build returns
 	err    error
+
+	doctorOpts []app.DoctorOptions
+	report     app.DoctorReport // what Diagnose returns
+	statuses   []app.AgentStatus
+	cleanOpts  []app.CleanOptions
+	cleaned    []app.CleanResult
 }
 
 func (f *fakeService) Run(_ context.Context, request app.Request) error {
@@ -24,15 +31,34 @@ func (f *fakeService) Run(_ context.Context, request app.Request) error {
 	return f.err
 }
 
-func (f *fakeService) Build(_ context.Context, noCache bool) error {
-	f.builds = append(f.builds, noCache)
-	return f.err
+func (f *fakeService) Build(_ context.Context, opts app.BuildOptions) ([]app.BuiltImage, error) {
+	f.builds = append(f.builds, opts)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.built, nil
+}
+
+func (f *fakeService) Diagnose(_ context.Context, opts app.DoctorOptions) app.DoctorReport {
+	f.doctorOpts = append(f.doctorOpts, opts)
+	return f.report
+}
+
+func (f *fakeService) List() ([]app.AgentStatus, error) { return f.statuses, f.err }
+
+func (f *fakeService) Clean(_ context.Context, opts app.CleanOptions) ([]app.CleanResult, error) {
+	f.cleanOpts = append(f.cleanOpts, opts)
+	return f.cleaned, f.err
+}
+
+func (f *fakeService) services() Services {
+	return Services{Run: f, Build: f, Doctor: f, List: f, Clean: f}
 }
 
 // execute runs the root command with args and returns its stdout.
 func execute(t *testing.T, service *fakeService, args ...string) (string, error) {
 	t.Helper()
-	cmd := NewRootCmd("test", agent.Builtin(), service)
+	cmd := NewRootCmd("test", agent.Builtin(), service.services())
 	var stdout bytes.Buffer
 	cmd.SetArgs(args)
 	cmd.SetOut(&stdout)
@@ -104,7 +130,7 @@ func TestRootCmdPassesFlagsToService(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeService{}
-	_, err := execute(t, service, "--no-config", "--verbose", "--allow-broad-mount", "-w", "/work", "--env", "A", "--env", "B", "pi", "hi")
+	_, err := execute(t, service, "--no-config", "--verbose", "--allow-broad-mount", "-w", "/work", "--env", "A", "--env", "B", "-p", "3000", "--publish", "8080:4000", "pi", "hi")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +143,7 @@ func TestRootCmdPassesFlagsToService(t *testing.T) {
 		t.Fatal(err)
 	}
 	prompt := "hi"
-	want := app.Request{Agent: &pi, Prompt: &prompt, NoConfig: true, Verbose: true, AllowBroadMount: true, WorkDir: "/work", EnvVars: []string{"A", "B"}}
+	want := app.Request{Agent: &pi, Prompt: &prompt, NoConfig: true, Verbose: true, AllowBroadMount: true, WorkDir: "/work", EnvVars: []string{"A", "B"}, Ports: []string{"3000", "8080:4000"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("request = %+v, want %+v", got, want)
 	}
@@ -126,7 +152,9 @@ func TestRootCmdPassesFlagsToService(t *testing.T) {
 func TestAgentNamesDoNotCollideWithSubcommands(t *testing.T) {
 	t.Parallel()
 
-	subcommands := map[string]struct{}{"build": {}, "list": {}, "help": {}, "completion": {}}
+	// "shared" is not a subcommand: it is the owner name of shared config
+	// mounts (hostconfig.SharedOwner), so no agent may use it either.
+	subcommands := map[string]struct{}{"build": {}, "list": {}, "doctor": {}, "clean": {}, "help": {}, "completion": {}, "shared": {}}
 	for _, name := range agent.Builtin().Names() {
 		if _, ok := subcommands[name]; ok {
 			t.Errorf("agent %q collides with a root subcommand", name)
@@ -150,13 +178,22 @@ func TestInvalidEnvFlagRejected(t *testing.T) {
 func TestBuildCommand(t *testing.T) {
 	t.Parallel()
 
-	service := &fakeService{}
+	service := &fakeService{built: []app.BuiltImage{{Role: "runtime", Ref: "caged-runtime:latest"}}}
 	stdout, err := execute(t, service, "build", "--no-cache")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(service.builds, []bool{true}) || stdout != "built runtime image caged-runtime:latest\n" {
+	if !reflect.DeepEqual(service.builds, []app.BuildOptions{{NoCache: true}}) || stdout != "built runtime image caged-runtime:latest\n" {
 		t.Fatalf("builds = %v, stdout = %q", service.builds, stdout)
+	}
+
+	both := &fakeService{built: []app.BuiltImage{
+		{Role: "runtime", Ref: "caged-runtime:latest"},
+		{Role: "extension", Ref: "caged-runtime:ext", Summary: "apt: neovim, tmux"},
+	}}
+	wantBoth := "built runtime image caged-runtime:latest\nbuilt extension image caged-runtime:ext (apt: neovim, tmux)\n"
+	if stdout, err := execute(t, both, "build"); err != nil || stdout != wantBoth {
+		t.Fatalf("build with an extension: stdout = %q, err = %v; want %q", stdout, err, wantBoth)
 	}
 
 	failing := &fakeService{err: errors.New("build failed")}
@@ -165,24 +202,135 @@ func TestBuildCommand(t *testing.T) {
 	}
 }
 
-func TestListCommandUsesInjectedAgents(t *testing.T) {
+func TestPassthroughArguments(t *testing.T) {
 	t.Parallel()
 
-	agents, err := agent.NewRegistry(
-		agent.Agent{Name: "zeta", Command: []string{"zeta"}},
-		agent.Agent{Name: "alpha", Command: []string{"alpha"}},
-	)
-	if err != nil {
-		t.Fatal(err)
+	const noAgent = "arguments after -- are passed to an agent; name one first, e.g. caged claude -- --resume"
+	tests := []struct {
+		name       string
+		args       []string
+		wantAgent  string
+		wantPrompt string
+		wantArgs   []string
+		wantErr    string
+		wantEnv    []string
+		wantNoMnt  bool
+	}{
+		{name: "flags after an agent", args: []string{"claude", "--", "--resume"}, wantAgent: "claude", wantArgs: []string{"--resume"}},
+		{name: "prompt and flags", args: []string{"claude", "fix tests", "--", "--model", "opus", "--add-dir", "../lib"}, wantAgent: "claude", wantPrompt: "fix tests", wantArgs: []string{"--model", "opus", "--add-dir", "../lib"}},
+		{name: "an agent with no prompt style", args: []string{"gh", "--", "pr", "list"}, wantAgent: "gh", wantArgs: []string{"pr", "list"}},
+		{name: "nothing after the dash and no agent opens the shell", args: []string{"--"}},
+		{name: "nothing after the dash keeps the agent", args: []string{"claude", "--"}, wantAgent: "claude"},
+		{name: "nothing after the dash keeps the prompt", args: []string{"claude", "hi", "--"}, wantAgent: "claude", wantPrompt: "hi"},
+		{name: "no agent is an error", args: []string{"--", "--resume"}, wantErr: noAgent},
+		{name: "a subcommand name after the dash is an error", args: []string{"--", "build"}, wantErr: noAgent},
+		{name: "too many arguments before the dash", args: []string{"claude", "a", "b", "--", "x"}, wantErr: "accepts at most 2 arg(s), received 3"},
+		{name: "too many arguments with no dash", args: []string{"claude", "a", "b"}, wantErr: "accepts at most 2 arg(s), received 3"},
+		{name: "caged flags after the dash belong to the agent", args: []string{"claude", "--", "--verbose", "-p", "x", "--no-mount"}, wantAgent: "claude", wantArgs: []string{"--verbose", "-p", "x", "--no-mount"}},
+		{name: "caged flags before the agent are still caged's", args: []string{"--no-mount", "--env", "A", "claude", "--", "--verbose"}, wantAgent: "claude", wantArgs: []string{"--verbose"}, wantEnv: []string{"A"}, wantNoMnt: true},
+		{name: "a second dash is just an argument", args: []string{"claude", "--", "a", "--", "b"}, wantAgent: "claude", wantArgs: []string{"a", "--", "b"}},
+		{name: "shell syntax is kept as is", args: []string{"claude", "--", "$(id)", `"q"`}, wantAgent: "claude", wantArgs: []string{"$(id)", `"q"`}},
+		{name: "an unsupported agent is still reported", args: []string{"foo", "--", "x"}, wantErr: `unsupported agent "foo"`},
 	}
-	cmd := NewRootCmd("test", agents, &fakeService{})
-	var stdout bytes.Buffer
-	cmd.SetArgs([]string{"list"})
-	cmd.SetOut(&stdout)
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			service := &fakeService{}
+			_, err := execute(t, service, tt.args...)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Execute(%q) error = %v, want %q", tt.args, err, tt.wantErr)
+				}
+				if len(service.runs) != 0 {
+					t.Fatalf("service ran despite the error: %+v", service.runs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Execute(%q) error = %v", tt.args, err)
+			}
+			if len(service.runs) != 1 {
+				t.Fatalf("runs = %+v, want one", service.runs)
+			}
+			got := service.runs[0]
+			if (got.Agent == nil) != (tt.wantAgent == "") || (got.Agent != nil && got.Agent.Name != tt.wantAgent) {
+				t.Errorf("agent = %+v, want %q", got.Agent, tt.wantAgent)
+			}
+			if (got.Prompt == nil) != (tt.wantPrompt == "") || (got.Prompt != nil && *got.Prompt != tt.wantPrompt) {
+				t.Errorf("prompt = %v, want %q", got.Prompt, tt.wantPrompt)
+			}
+			if !reflect.DeepEqual(got.AgentArgs, tt.wantArgs) {
+				t.Errorf("AgentArgs = %q, want %q", got.AgentArgs, tt.wantArgs)
+			}
+			if !reflect.DeepEqual(got.EnvVars, tt.wantEnv) || got.NoMount != tt.wantNoMnt {
+				t.Errorf("flags = env %q, no-mount %v; want env %q, no-mount %v", got.EnvVars, got.NoMount, tt.wantEnv, tt.wantNoMnt)
+			}
+		})
 	}
-	if stdout.String() != "alpha\nzeta\n" {
-		t.Fatalf("list output = %q", stdout.String())
+}
+
+func TestUnknownFlagHintPointsToTheDash(t *testing.T) {
+	t.Parallel()
+
+	const hint = " (caged's flags go before the agent name; pass agent flags after --, e.g. caged claude -- --resume)"
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "unknown long flag", args: []string{"claude", "--resume"}, want: "unknown flag: --resume" + hint},
+		{name: "unknown short flag", args: []string{"-x", "claude"}, want: "unknown shorthand flag: 'x' in -x" + hint},
+		{name: "a subcommand's unknown flag gets the hint too", args: []string{"build", "--bogus"}, want: "unknown flag: --bogus" + hint},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			service := &fakeService{}
+			_, err := execute(t, service, tt.args...)
+			if err == nil || err.Error() != tt.want {
+				t.Fatalf("Execute(%q) error = %v, want %q", tt.args, err, tt.want)
+			}
+		})
+	}
+	t.Run("other flag errors are untouched", func(t *testing.T) {
+		t.Parallel()
+		_, err := execute(t, &fakeService{}, "--workdir")
+		if err == nil || strings.Contains(err.Error(), "agent flags") {
+			t.Fatalf("Execute() error = %v, want cobra's own message", err)
+		}
+	})
+}
+
+func TestCompletionStopsAfterTheDash(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "nothing after an agent", args: []string{"__complete", "claude", ""}, want: ":4\n"},
+		{name: "nothing after the dash", args: []string{"__complete", "claude", "--", ""}, want: ":4\n"},
+		{name: "nothing after the prompt and the dash", args: []string{"__complete", "claude", "hi", "--", ""}, want: ":4\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			stdout, err := execute(t, &fakeService{}, tt.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stdout != tt.want {
+				t.Fatalf("completion output = %q, want %q", stdout, tt.want)
+			}
+		})
+	}
+	t.Run("agents are still suggested before the dash", func(t *testing.T) {
+		t.Parallel()
+		stdout, err := execute(t, &fakeService{}, "__complete", "")
+		if err != nil || !strings.Contains(stdout, "claude") {
+			t.Fatalf("completion output = %q, %v; want agent names", stdout, err)
+		}
+	})
 }

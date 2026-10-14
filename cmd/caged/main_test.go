@@ -47,8 +47,8 @@ func TestNewAgentWorksEndToEnd(t *testing.T) {
 	}
 
 	list := runGoldenCase(t, goldenCase{args: []string{"list"}}, linux, agents)
-	if !strings.Contains(list, "=== stdout\naider\nclaude\ncodex\n") {
-		t.Errorf("list does not show the new agent first:\n%s", list)
+	if !strings.Contains(list, "=== stdout\nAGENT    CONFIG") || !strings.Contains(list, "\naider    not found  ") || strings.Index(list, "\naider ") > strings.Index(list, "\nclaude ") {
+		t.Errorf("list does not show the new agent first, with no config found:\n%s", list)
 	}
 }
 

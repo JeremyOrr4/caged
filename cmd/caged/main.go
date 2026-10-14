@@ -7,14 +7,14 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
-	"os/exec"
+	"runtime/debug"
 
 	"github.com/JeremyOrr4/caged/internal/agent"
 	"github.com/JeremyOrr4/caged/internal/app"
 	"github.com/JeremyOrr4/caged/internal/cli"
 	"github.com/JeremyOrr4/caged/internal/docker"
+	"github.com/JeremyOrr4/caged/internal/extension"
 	"github.com/JeremyOrr4/caged/internal/hostconfig"
 	"github.com/JeremyOrr4/caged/internal/project"
 	"github.com/JeremyOrr4/caged/internal/system"
@@ -25,7 +25,7 @@ var version = "dev"
 
 func main() {
 	stdio, platform := system.CurrentStdio(), system.CurrentPlatform()
-	os.Exit(run(context.Background(), version, os.Args[1:], stdio, platform, agent.Builtin()))
+	os.Exit(run(context.Background(), resolveVersion(version, debug.ReadBuildInfo), os.Args[1:], stdio, platform, agent.Builtin()))
 }
 
 // run wires caged together, executes one command line, and returns the
@@ -33,11 +33,23 @@ func main() {
 func run(ctx context.Context, version string, args []string, stdio system.Stdio, platform system.Platform, agents *agent.Registry) int {
 	fsys, env := system.FS{}, system.Env{}
 	configs := hostconfig.NewResolver(fsys, env, agents.All(), hostconfig.DefaultSharedFiles())
-	planner := app.NewPlanner(env, project.NewResolver(fsys), configs, stdio.Err)
-	engine := docker.NewClient(system.Executor{}, fsys, platform, stdio)
-	service := app.New(engine, planner, stdio.Err)
+	projects := project.NewResolver(fsys)
+	planner := app.NewPlanner(env, projects, configs)
+	client := docker.NewClient(system.Executor{}, fsys, platform, stdio)
+	exts := extension.NewLoader(fsys, env)
+	ensurer := app.NewImageEnsurer(client, version)
+	services := cli.Services{
+		Run:   app.NewRunner(exts, planner, client, ensurer, client, stdio.Err),
+		Build: app.NewBuilder(exts, client, ensurer, stdio.Err),
+		Doctor: app.NewDoctor(app.DoctorDeps{
+			Daemon: client, Store: client, Prober: client, Extensions: exts, Project: projects,
+			Env: env, Host: app.Host{OS: platform.OS, Arch: platform.Arch}, Version: version,
+		}),
+		List:  app.NewLister(env, configs, agents.All()),
+		Clean: app.NewCleaner(client, client, client),
+	}
 
-	root := cli.NewRootCmd(version, agents, service)
+	root := cli.NewRootCmd(version, agents, services)
 	if args == nil {
 		args = []string{} // a nil slice would make cobra read os.Args instead
 	}
@@ -48,10 +60,10 @@ func run(ctx context.Context, version string, args []string, stdio system.Stdio,
 	if err == nil {
 		return 0
 	}
-	fmt.Fprintln(stdio.Err, err)
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode()
+	app.NewReporter(stdio.Err, false).Notice("%v", err)
+	var coder interface{ ExitCode() int }
+	if errors.As(err, &coder) {
+		return coder.ExitCode()
 	}
 	return 1
 }

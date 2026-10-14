@@ -22,14 +22,17 @@ env: skipped GEMINI_API_KEY (unset or disallowed)
 env: skipped GOOGLE_API_KEY (unset or disallowed)
 env: pass CAGED_GOLDEN_SET
 env: skipped CAGED_GOLDEN_UNSET (unset or disallowed)
+command: ["codex"]
+image: no extension (~/.config/caged/image.json not found)
+image: caged-runtime:latest is current (runtime $RUNTIME_HASH12)
 === docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
 image
 inspect
 caged-runtime:latest
----
-info
---format
-{{.ServerVersion}}
 ---
 run
 -it

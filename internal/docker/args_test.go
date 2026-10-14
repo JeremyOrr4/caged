@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/JeremyOrr4/caged/internal/images"
 	"github.com/JeremyOrr4/caged/internal/plan"
-	"github.com/JeremyOrr4/caged/internal/runtime"
 	"github.com/JeremyOrr4/caged/internal/system"
 )
 
@@ -67,7 +67,7 @@ func TestRunArgs(t *testing.T) {
 		{
 			name: "agent command in runtime image",
 			options: plan.RunSpec{
-				Image:         runtime.Image,
+				Image:         images.BaseRef,
 				Command:       []string{"claude"},
 				Mount:         &plan.Mount{HostPath: "/project", ContainerPath: "/workspace"},
 				ReturnToShell: true,
@@ -81,14 +81,14 @@ func TestRunArgs(t *testing.T) {
 				"-w", "/workspace",
 				"--user", "2001:2002",
 				"-e", "CAGED_RETURN_TO_SHELL=1",
-				runtime.Image,
+				images.BaseRef,
 				"claude",
 			},
 		},
 		{
 			name: "config read-write mount and env names",
 			options: plan.RunSpec{
-				Image:         runtime.Image,
+				Image:         images.BaseRef,
 				Command:       []string{"claude"},
 				EnvVars:       []string{"ANTHROPIC_API_KEY", "GEMINI_API_KEY"},
 				ReturnToShell: true,
@@ -110,14 +110,14 @@ func TestRunArgs(t *testing.T) {
 				"-e", "ANTHROPIC_API_KEY",
 				"-e", "GEMINI_API_KEY",
 				"-e", "CAGED_RETURN_TO_SHELL=1",
-				runtime.Image,
+				images.BaseRef,
 				"claude",
 			},
 		},
 		{
 			name: "Pi config mounts directly read-write",
 			options: plan.RunSpec{
-				Image: runtime.Image,
+				Image: images.BaseRef,
 				ConfigMounts: []plan.ConfigMount{{
 					Agent:    "pi",
 					Name:     ".pi",
@@ -132,13 +132,13 @@ func TestRunArgs(t *testing.T) {
 			want: []string{
 				"run", "-it", "--rm",
 				"-v", "/home/test/.pi:/home/caged/.pi",
-				runtime.Image,
+				images.BaseRef,
 			},
 		},
 		{
 			name: "config mount uses image user on macOS",
 			options: plan.RunSpec{
-				Image: runtime.Image,
+				Image: images.BaseRef,
 				ConfigMounts: []plan.ConfigMount{{
 					HostPath: "/tmp/caged-config",
 					DestPath: "/home/caged/.codex",
@@ -151,13 +151,13 @@ func TestRunArgs(t *testing.T) {
 			want: []string{
 				"run", "-it", "--rm",
 				"-v", "/tmp/caged-config:/home/caged/.codex",
-				runtime.Image,
+				images.BaseRef,
 			},
 		},
 		{
 			name: "Pi config is writable",
 			options: plan.RunSpec{
-				Image: runtime.Image,
+				Image: images.BaseRef,
 				ConfigMounts: []plan.ConfigMount{{
 					Agent:    "pi",
 					Name:     ".pi",
@@ -172,7 +172,7 @@ func TestRunArgs(t *testing.T) {
 			want: []string{
 				"run", "-it", "--rm",
 				"-v", "/home/test/.pi:/home/caged/.pi",
-				runtime.Image,
+				images.BaseRef,
 			},
 		},
 	}
@@ -188,11 +188,42 @@ func TestRunArgs(t *testing.T) {
 	}
 }
 
+func TestRunArgsPublishPortsRightAfterRm(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		ports []plan.Port
+		want  []string
+	}{
+		{name: "no ports leaves the arguments as before", want: []string{"run", "-it", "--rm", "-v", "/p:/workspace/p", "-w", "/workspace/p", "img", "bash"}},
+		{
+			name:  "one port",
+			ports: []plan.Port{{HostIP: "127.0.0.1", HostPort: 3000, ContainerPort: 3000}},
+			want:  []string{"run", "-it", "--rm", "-p", "127.0.0.1:3000:3000", "-v", "/p:/workspace/p", "-w", "/workspace/p", "img", "bash"},
+		},
+		{
+			name:  "several ports keep their order",
+			ports: []plan.Port{{HostIP: "127.0.0.1", HostPort: 8080, ContainerPort: 3000}, {HostIP: "127.0.0.1", HostPort: 5173, ContainerPort: 5173}},
+			want:  []string{"run", "-it", "--rm", "-p", "127.0.0.1:8080:3000", "-p", "127.0.0.1:5173:5173", "-v", "/p:/workspace/p", "-w", "/workspace/p", "img", "bash"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			spec := plan.RunSpec{Image: "img", Command: []string{"bash"}, Ports: tt.ports, Mount: &plan.Mount{HostPath: "/p", ContainerPath: "/workspace/p"}}
+			if got := runArgs(spec, system.Platform{OS: "darwin"}); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("runArgs() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunArgsExposeOnlyPlannedMounts(t *testing.T) {
 	t.Parallel()
 
 	options := plan.RunSpec{
-		Image: runtime.Image,
+		Image: images.BaseRef,
 		Mount: &plan.Mount{HostPath: "/projects/current", ContainerPath: "/workspace/current"},
 		ConfigMounts: []plan.ConfigMount{
 			{HostPath: "/home/user/.claude", DestPath: "/home/caged/.claude", Writable: true},
@@ -218,7 +249,7 @@ func TestRunArgsExposeOnlyPlannedMounts(t *testing.T) {
 func TestRunArgsMaskCodexRuntimeDirectories(t *testing.T) {
 	t.Parallel()
 
-	options := plan.RunSpec{Image: runtime.Image, ConfigMounts: []plan.ConfigMount{{
+	options := plan.RunSpec{Image: images.BaseRef, ConfigMounts: []plan.ConfigMount{{
 		HostPath: "/home/user/.codex", DestPath: "/home/caged/.codex", Writable: true,
 		MaskPaths: []string{"app-server-control", "ipc"},
 	}}}

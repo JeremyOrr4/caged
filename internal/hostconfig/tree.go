@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+
+	"github.com/JeremyOrr4/caged/internal/plan"
 )
 
 // validateMaskedConfigTree accepts a directory that will be mounted whole. It
@@ -60,8 +62,9 @@ func validateMaskedConfigTree(fsys FileSystem, root string, masks []string) erro
 
 // collectSafeMounts returns the largest subtrees of root that contain only
 // regular files and directories, plus a reason for every entry it skipped.
-func collectSafeMounts(fsys FileSystem, root string) ([]string, []string) {
-	var mounts, refused []string
+func collectSafeMounts(fsys FileSystem, root string) ([]string, []plan.Refusal) {
+	var mounts []string
+	var refused []plan.Refusal
 	var collect func(string)
 	collect = func(path string) {
 		entries, err := fsys.ReadDir(path)
@@ -70,7 +73,7 @@ func collectSafeMounts(fsys FileSystem, root string) ([]string, []string) {
 			if statErr == nil && info.Mode().IsRegular() {
 				mounts = append(mounts, path)
 			} else {
-				refused = append(refused, path+" (cannot inspect config entry safely)")
+				refused = append(refused, plan.Refusal{Path: path, Reason: "cannot inspect config entry safely"})
 			}
 			return
 		}
@@ -82,7 +85,7 @@ func collectSafeMounts(fsys FileSystem, root string) ([]string, []string) {
 			child := filepath.Join(path, entry.Name())
 			info, err := fsys.Lstat(child)
 			if err != nil {
-				refused = append(refused, child+" (cannot inspect config entry safely)")
+				refused = append(refused, plan.Refusal{Path: child, Reason: "cannot inspect config entry safely"})
 				continue
 			}
 			if info.IsDir() {
@@ -90,19 +93,19 @@ func collectSafeMounts(fsys FileSystem, root string) ([]string, []string) {
 			} else if info.Mode().IsRegular() {
 				mounts = append(mounts, child)
 			} else {
-				refused = append(refused, child+" (symlinks and special files are excluded from config mounts)")
+				refused = append(refused, plan.Refusal{Path: child, Reason: "symlinks and special files are excluded from config mounts"})
 			}
 		}
 	}
 	info, err := fsys.Lstat(root)
 	if err != nil {
-		return nil, []string{root + " (cannot inspect config root safely)"}
+		return nil, []plan.Refusal{{Path: root, Reason: "cannot inspect config root safely"}}
 	}
 	if info.Mode().IsRegular() {
 		return []string{root}, nil
 	}
 	if !info.IsDir() {
-		return nil, []string{root + " (config root is not a regular file or directory)"}
+		return nil, []plan.Refusal{{Path: root, Reason: "config root is not a regular file or directory"}}
 	}
 	collect(root)
 	return mounts, refused
@@ -134,7 +137,7 @@ func subtreeIsSafe(fsys FileSystem, root string) bool {
 	return true
 }
 
-func appendUnique(values []string, value string) []string {
+func appendUnique[T comparable](values []T, value T) []T {
 	for _, existing := range values {
 		if existing == value {
 			return values

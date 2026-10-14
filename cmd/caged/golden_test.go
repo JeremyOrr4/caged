@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,43 +14,110 @@ import (
 	"testing"
 
 	"github.com/JeremyOrr4/caged/internal/agent"
+	"github.com/JeremyOrr4/caged/internal/images"
+	"github.com/JeremyOrr4/caged/internal/plan"
 	"github.com/JeremyOrr4/caged/internal/system"
 )
 
-// fakeDocker stands in for the docker CLI. It appends every invocation to
-// $FAKE_DOCKER_LOG (one argument per line, then "---") and fakes the replies
-// caged depends on. FAKE_DOCKER_* variables select failure modes.
-const fakeDocker = `#!/bin/sh
-{ printf '%s\n' "$@"; echo '---'; } >> "$FAKE_DOCKER_LOG"
-case "$1" in
-info)
-  if [ -n "$FAKE_DOCKER_DAEMON_DOWN" ]; then
-    echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2
-    exit 1
-  fi
-  echo '27.0.0'
-  ;;
-image)
-  if [ -n "$FAKE_DOCKER_IMAGE_MISSING" ]; then exit 1; fi
-  ;;
-build)
-  for arg in "$@"; do context="$arg"; done
-  {
-    echo "build context Dockerfile: $(cksum < "$context/Dockerfile")"
-    echo "build context caged-entrypoint.sh: $(cksum < "$context/caged-entrypoint.sh")"
-    if [ -x "$context/caged-entrypoint.sh" ]; then echo 'build context entrypoint is executable'; fi
-    echo '---'
-  } >> "$FAKE_DOCKER_LOG"
-  echo 'fake docker build output'
-  ;;
-run)
-  echo 'fake docker run output'
-  if [ -n "$FAKE_DOCKER_RUN_STDERR" ]; then echo "$FAKE_DOCKER_RUN_STDERR" >&2; fi
-  exit "${FAKE_DOCKER_RUN_EXIT:-0}"
-  ;;
-esac
-exit 0
-`
+// fakeDockerPath is the fake docker CLI. Its header documents the state
+// directory that drives it.
+const fakeDockerPath = "testdata/fakedocker/docker"
+
+// fakeImage is the image inspect reply of one local image.
+type fakeImage struct {
+	ID, OS, Arch string
+	Labels       map[string]string
+}
+
+// fakeFailure makes one docker verb fail with an exit code and stderr text.
+type fakeFailure struct {
+	Code   int
+	Stderr string
+}
+
+// withArch returns a copy of image built for another architecture.
+func withArch(image fakeImage, arch string) fakeImage {
+	image.Arch = arch
+	return image
+}
+
+// cleanFixture is what `docker image ls` shows on a machine with an extension
+// image, a runtime image, a replaced (untagged) image, and an older unlabeled one.
+func cleanFixture() []string {
+	return []string{
+		`{"ID":"sha256:aaa111","Repository":"caged-runtime","Tag":"ext","Size":"412MB","Labels":"io.github.jeremyorr4.caged.role=extension"}`,
+		`{"ID":"sha256:bbb222","Repository":"caged-runtime","Tag":"latest","Size":"3.1GB","Labels":"io.github.jeremyorr4.caged.role=runtime"}`,
+		`{"ID":"sha256:1a2b3c4d5e6f7a8b","Repository":"<none>","Tag":"<none>","Size":"3.0GB","Labels":"io.github.jeremyorr4.caged.role=runtime"}`,
+		`{"ID":"sha256:ccc333","Repository":"caged-runtime","Tag":"old","Size":"2.9GB"}`,
+	}
+}
+
+// goldenVersion is the caged version the golden tests run as.
+const goldenVersion = "test"
+
+// currentBase is the runtime image that the golden version would build.
+func currentBase() fakeImage {
+	labels := map[string]string{images.LabelVersion: goldenVersion}
+	for _, label := range images.Base(goldenVersion).Identity {
+		labels[label.Key] = label.Value
+	}
+	return fakeImage{ID: "sha256:fake-base", Labels: labels}
+}
+
+// staleBase is a runtime image built from other files by an older caged.
+func staleBase() fakeImage {
+	return fakeImage{ID: "sha256:fake-base", Labels: map[string]string{
+		images.LabelRole: string(images.RoleRuntime), images.LabelRuntimeHash: "old", images.LabelVersion: "0.0.1",
+	}}
+}
+
+// goldenExtensionFile is the path of the user's image.json under $ROOT.
+const goldenExtensionFile = "home/.config/caged/image.json"
+
+// currentExtension is the extension image that the golden version would build
+// from the packages in apt, on the base image with ID baseID.
+func currentExtension(apt []string, baseID string) fakeImage {
+	target := images.Extension(plan.Extension{Source: "~/.config/caged/image.json", Apt: apt}, baseID, goldenVersion)
+	labels := map[string]string{images.LabelVersion: goldenVersion}
+	for _, label := range target.Identity {
+		labels[label.Key] = label.Value
+	}
+	return fakeImage{ID: "sha256:fake-ext", Labels: labels}
+}
+
+// staleExtension is an extension image built from other packages.
+func staleExtension(baseID string) fakeImage {
+	return fakeImage{ID: "sha256:fake-ext", Labels: map[string]string{
+		images.LabelRole: string(images.RoleExtension), images.LabelExtensionHash: "old", images.LabelBaseID: baseID, images.LabelVersion: goldenVersion,
+	}}
+}
+
+// defaultImages is the state of a machine with an up-to-date runtime image.
+func defaultImages() map[string]fakeImage {
+	return map[string]fakeImage{images.BaseRef: currentBase()}
+}
+
+// inspectJSON renders the reply the fake docker gives for `image inspect`. An
+// image with no architecture gets defaultArch, the architecture of the host.
+func (i fakeImage) inspectJSON(defaultArch string) ([]byte, error) {
+	if i.ID == "" {
+		i.ID = "sha256:fake-base"
+	}
+	if i.OS == "" {
+		i.OS = "linux"
+	}
+	if i.Arch == "" {
+		i.Arch = defaultArch
+	}
+	type config struct{ Labels map[string]string }
+	reply := []struct {
+		ID           string `json:"Id"`
+		OS           string `json:"Os"`
+		Architecture string
+		Config       config
+	}{{ID: i.ID, OS: i.OS, Architecture: i.Arch, Config: config{Labels: i.Labels}}}
+	return json.Marshal(reply)
+}
 
 // goldenPrompt contains shell syntax to prove prompts are passed verbatim.
 const goldenPrompt = `hello $(world) "quoted" 'single'`
@@ -61,7 +129,18 @@ type goldenCase struct {
 	env map[string]string
 	// noDocker hides the fake docker binary from PATH.
 	noDocker bool
+	// files are extra fixture files under $ROOT, by relative path.
+	files map[string]string
+	// images are the local images; nil means defaultImages.
+	images map[string]fakeImage
+	// fail makes docker verbs fail, by verb name (see the fake docker header).
+	fail map[string]fakeFailure
+	// ls are the lines `docker image ls` prints, one JSON object each.
+	ls []string
 }
+
+// daemonDown is what docker info prints when the daemon is not running.
+var daemonDown = fakeFailure{Code: 1, Stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"}
 
 func goldenCases() []goldenCase {
 	cases := []goldenCase{
@@ -114,18 +193,74 @@ func goldenCases() []goldenCase {
 			},
 		},
 		{name: "home-unresolvable", args: []string{"--verbose", "--no-mount"}, env: map[string]string{"HOME": "$ROOT/missing-home"}},
-		{name: "image-missing-builds-first", args: []string{"gemini"}, env: map[string]string{"FAKE_DOCKER_IMAGE_MISSING": "1"}},
-		{name: "run-exit-code", args: []string{"claude"}, env: map[string]string{"FAKE_DOCKER_RUN_EXIT": "7"}},
+		{name: "ports-publish", args: []string{"-p", "3000", "-p", "8080:3000", "--verbose", "claude"}, env: map[string]string{"ANTHROPIC_API_KEY": "secret"}},
+		{name: "ports-invalid", args: []string{"-p", "70000", "claude"}},
+		{
+			name: "ports-in-use",
+			args: []string{"-p", "8080:3000", "claude"},
+			fail: map[string]fakeFailure{"run": {Code: 125, Stderr: "docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint x: failed to bind host port 127.0.0.1:8080/tcp: address already in use"}},
+		},
+		{name: "image-stale-rebuilds", args: []string{"claude"}, images: map[string]fakeImage{images.BaseRef: staleBase()}},
+		{name: "image-unlabeled-rebuilds", args: []string{"gemini"}, images: map[string]fakeImage{images.BaseRef: {ID: "sha256:fake-base"}}},
+		{name: "image-current-verbose", args: []string{"--verbose", "--no-mount", "--no-config"}},
+		{
+			name:   "image-rebuild-fails",
+			args:   []string{"claude"},
+			images: map[string]fakeImage{images.BaseRef: staleBase()},
+			fail:   map[string]fakeFailure{"build": {Code: 1, Stderr: "ERROR: failed to solve: process \"/bin/sh -c false\" did not complete successfully"}},
+		},
+		{
+			name:  "extension-first-build",
+			args:  []string{"claude"},
+			files: map[string]string{goldenExtensionFile: `{"apt": ["tmux", "neovim", "tmux"]}`},
+		},
+		{
+			name:   "extension-current",
+			args:   []string{"--verbose", "--no-config", "claude"},
+			files:  map[string]string{goldenExtensionFile: `{"apt": ["neovim", "tmux"]}`},
+			images: map[string]fakeImage{images.BaseRef: currentBase(), images.ExtensionRef: currentExtension([]string{"neovim", "tmux"}, "sha256:fake-base")},
+		},
+		{
+			name:   "extension-stale-after-edit",
+			args:   []string{"--no-config", "claude"},
+			files:  map[string]string{goldenExtensionFile: `{"apt": ["neovim", "tmux", "shellcheck"]}`},
+			images: map[string]fakeImage{images.BaseRef: currentBase(), images.ExtensionRef: staleExtension("sha256:fake-base")},
+		},
+		{
+			name:  "extension-invalid",
+			args:  []string{"claude"},
+			files: map[string]string{goldenExtensionFile: `{"apt": ["vim; curl x"]}`},
+		},
+		{
+			name:  "build-with-extension",
+			args:  []string{"build"},
+			files: map[string]string{goldenExtensionFile: `{"apt": ["neovim", "tmux"]}`},
+		},
+		{name: "passthrough-prompt-claude", args: []string{"claude", goldenPrompt, "--", "--model", "opus", "--add-dir", "../lib", "$(id)", `"q"`}},
+		{name: "passthrough-gh", args: []string{"gh", "--", "pr", "list"}},
+		{name: "passthrough-no-agent", args: []string{"--", "--resume"}},
+		{name: "passthrough-dash-build", args: []string{"--", "build"}},
+		{name: "doctor-ok", args: []string{"doctor"}},
+		{name: "doctor-daemon-down", args: []string{"doctor"}, fail: map[string]fakeFailure{"info": daemonDown}},
+		{name: "doctor-arch-mismatch", args: []string{"doctor"}, images: map[string]fakeImage{images.BaseRef: withArch(currentBase(), "s390x")}},
+		{name: "list-env-set", args: []string{"list"}, env: map[string]string{"ANTHROPIC_API_KEY": "secret-value-never-printed", "GH_TOKEN": "secret-value-never-printed"}},
+		{name: "clean", args: []string{"clean"}, ls: cleanFixture()},
+		{name: "clean-dry-run", args: []string{"clean", "--dry-run"}, ls: cleanFixture()},
+		{
+			name: "clean-in-use",
+			args: []string{"clean"},
+			ls:   cleanFixture(),
+			fail: map[string]fakeFailure{"image-rm": {Code: 1, Stderr: "Error response from daemon: conflict: unable to delete sha256:aaa (cannot be forced) - image is being used by running container 0123456789ab"}},
+		},
+		{name: "image-missing-builds-first", args: []string{"gemini"}, images: map[string]fakeImage{}},
+		{name: "run-exit-code", args: []string{"claude"}, fail: map[string]fakeFailure{"run": {Code: 7}}},
 		{
 			name: "run-mounts-denied",
 			args: []string{"codex"},
-			env: map[string]string{
-				"FAKE_DOCKER_RUN_EXIT":   "125",
-				"FAKE_DOCKER_RUN_STDERR": "docker: Error response from daemon: Mounts denied: the path is not shared from the host.",
-			},
+			fail: map[string]fakeFailure{"run": {Code: 125, Stderr: "docker: Error response from daemon: Mounts denied: the path is not shared from the host."}},
 		},
-		{name: "daemon-down", args: []string{"claude"}, env: map[string]string{"FAKE_DOCKER_DAEMON_DOWN": "1"}},
-		{name: "build-daemon-down", args: []string{"build"}, env: map[string]string{"FAKE_DOCKER_DAEMON_DOWN": "1"}},
+		{name: "daemon-down", args: []string{"claude"}, fail: map[string]fakeFailure{"info": daemonDown}},
+		{name: "build-daemon-down", args: []string{"build"}, fail: map[string]fakeFailure{"info": daemonDown}},
 		{name: "docker-missing", args: []string{"claude"}, noDocker: true},
 	}
 	for _, name := range []string{"claude", "codex", "copilot", "gemini", "gh", "pi"} {
@@ -189,6 +324,7 @@ func originalAgents(t *testing.T) *agent.Registry {
 func runGoldenCase(t *testing.T, tc goldenCase, platform system.Platform, agents *agent.Registry) string {
 	root := t.TempDir()
 	writeGoldenFixtures(t, root)
+	writeFakeDockerState(t, root, tc, platform)
 	logPath := filepath.Join(root, "docker.log")
 
 	for _, name := range []string{
@@ -196,7 +332,6 @@ func runGoldenCase(t *testing.T, tc goldenCase, platform system.Platform, agents
 		"GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME",
 		"CAGED_GOLDEN_SET", "CAGED_GOLDEN_UNSET",
-		"FAKE_DOCKER_DAEMON_DOWN", "FAKE_DOCKER_IMAGE_MISSING", "FAKE_DOCKER_RUN_EXIT", "FAKE_DOCKER_RUN_STDERR",
 	} {
 		unsetEnv(t, name)
 	}
@@ -208,10 +343,12 @@ func runGoldenCase(t *testing.T, tc goldenCase, platform system.Platform, agents
 	t.Setenv("HOME", filepath.Join(root, "home"))
 	t.Setenv("TMPDIR", filepath.Join(root, "tmp"))
 	t.Setenv("FAKE_DOCKER_LOG", logPath)
+	t.Setenv("FAKE_DOCKER_STATE", filepath.Join(root, "docker-state"))
 	for name, value := range tc.env {
 		t.Setenv(name, strings.ReplaceAll(value, "$ROOT", root))
 	}
-	chdir(t, filepath.Join(root, "work", "project"))
+	restore := chdir(t, filepath.Join(root, "work", "project"))
+	defer restore()
 
 	args := make([]string, 0, len(tc.args))
 	for _, arg := range tc.args {
@@ -250,17 +387,25 @@ func executeRun(t *testing.T, root string, args []string, platform system.Platfo
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stdoutFile.Close()
+	t.Cleanup(func() {
+		if err := stdoutFile.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	stderrFile, err := os.Create(filepath.Join(root, "stderr.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stderrFile.Close()
+	t.Cleanup(func() {
+		if err := stderrFile.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 
 	oldStdout, oldStderr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = stdoutFile, stderrFile
 	stdio := system.Stdio{In: strings.NewReader(""), Out: stdoutFile, Err: stderrFile}
-	code := run(context.Background(), "test", args, stdio, platform, agents)
+	code := run(context.Background(), goldenVersion, args, stdio, platform, agents)
 	os.Stdout, os.Stderr = oldStdout, oldStderr
 
 	stdout, err := os.ReadFile(stdoutFile.Name())
@@ -316,7 +461,11 @@ func writeGoldenFixtures(t *testing.T, root string) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(root, "bin", "docker"), []byte(fakeDocker), 0o755); err != nil {
+	script, err := os.ReadFile(fakeDockerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "bin", "docker"), script, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := syscall.Mkfifo(filepath.Join(root, "home/.codex/app-server-control/daemon.sock"), 0o600); err != nil {
@@ -333,7 +482,59 @@ func writeGoldenFixtures(t *testing.T, root string) {
 	}
 }
 
-var buildDirPattern = regexp.MustCompile(`caged-runtime-[0-9]+`)
+// writeFakeDockerState writes the case's extra fixture files and the state
+// directory that drives the fake docker.
+func writeFakeDockerState(t *testing.T, root string, tc goldenCase, platform system.Platform) {
+	t.Helper()
+	write := func(path string, data []byte) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, contents := range tc.files {
+		write(filepath.Join(root, name), []byte(contents))
+	}
+	state := filepath.Join(root, "docker-state")
+	images := tc.images
+	if images == nil {
+		images = defaultImages()
+	}
+	if err := os.MkdirAll(filepath.Join(state, "images"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for ref, image := range images {
+		reply, err := image.inspectJSON(platform.Arch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(filepath.Join(state, "images", ref+".json"), append(reply, '\n'))
+	}
+	// The fake daemon runs on the same architecture as the host, as Docker
+	// Desktop does, so no case sees a mismatch it did not ask for.
+	daemonArch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[platform.Arch]
+	write(filepath.Join(state, "info"), []byte("27.0.0|Docker Desktop|"+daemonArch+"\n"))
+	write(filepath.Join(state, "versions"), []byte("claude=2.1.3\ncodex=0.46.0\ngemini=0.9.0\ncopilot=0.0.330\npi=0.12.0\ngh=2.81.0\n"))
+	if len(tc.ls) > 0 {
+		write(filepath.Join(state, "ls"), []byte(strings.Join(tc.ls, "\n")+"\n"))
+	}
+	for verb, failure := range tc.fail {
+		contents := fmt.Sprintf("%d\n", failure.Code)
+		if failure.Stderr != "" {
+			contents += failure.Stderr + "\n"
+		}
+		write(filepath.Join(state, "fail", verb), []byte(contents))
+	}
+}
+
+var (
+	buildDirPattern = regexp.MustCompile(`caged-(runtime|extension)-[0-9]+`)
+	cksumPattern    = regexp.MustCompile(`(build context Dockerfile: )[0-9]+ [0-9]+`)
+	extHashPattern  = regexp.MustCompile(`(extension-hash=)[0-9a-f]{64}`)
+)
 
 // normalizeGolden replaces values that change between runs and machines.
 func normalizeGolden(t *testing.T, text, root string, platform system.Platform) string {
@@ -345,7 +546,14 @@ func normalizeGolden(t *testing.T, text, root string, platform system.Platform) 
 	text = strings.ReplaceAll(text, resolvedRoot, "$ROOT")
 	text = strings.ReplaceAll(text, root, "$ROOT")
 	text = strings.ReplaceAll(text, fmt.Sprintf("\n--user\n%d:%d\n", platform.UID, platform.GID), "\n--user\n$UID:$GID\n")
-	return buildDirPattern.ReplaceAllString(text, "caged-runtime-N")
+	// The runtime hash and the Dockerfile checksum change with every edit of the
+	// embedded files; the goldens cover argv, output, and exit codes only.
+	hash := images.ContextHash(images.Base(goldenVersion).Files)
+	text = strings.ReplaceAll(text, hash, "$RUNTIME_HASH")
+	text = strings.ReplaceAll(text, hash[:12], "$RUNTIME_HASH12")
+	text = cksumPattern.ReplaceAllString(text, "${1}$$CKSUM")
+	text = extHashPattern.ReplaceAllString(text, "${1}$$EXT_HASH")
+	return buildDirPattern.ReplaceAllString(text, "caged-$1-N")
 }
 
 // compareGolden checks got against the golden file. With CAGED_UPDATE_GOLDEN=1
@@ -380,7 +588,9 @@ func unsetEnv(t *testing.T, name string) {
 	}
 }
 
-func chdir(t *testing.T, dir string) {
+// chdir changes into dir and returns a function that changes back. The change
+// is also undone when the test ends, in case the caller never calls it.
+func chdir(t *testing.T, dir string) (restore func()) {
 	t.Helper()
 	old, err := os.Getwd()
 	if err != nil {
@@ -389,9 +599,11 @@ func chdir(t *testing.T, dir string) {
 	if err := os.Chdir(dir); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
+	restore = func() {
 		if err := os.Chdir(old); err != nil {
 			t.Error(err)
 		}
-	})
+	}
+	t.Cleanup(restore)
+	return restore
 }

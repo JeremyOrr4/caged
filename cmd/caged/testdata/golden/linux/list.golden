@@ -3,11 +3,12 @@ exit code: 0
 error: <nil>
 leftover temp entries: 0
 === stdout
-claude
-codex
-copilot
-gemini
-gh
-pi
+AGENT    CONFIG               AUTH ENV SET
+claude   ~/.claude            -
+codex    ~/.codex             -
+copilot  ~/.copilot           -
+gemini   ~/.gemini (2 files)  -
+gh       ~/.config/gh         -
+pi       ~/.pi                -
 === stderr
 === docker invocations

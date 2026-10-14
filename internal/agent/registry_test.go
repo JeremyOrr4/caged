@@ -158,7 +158,7 @@ func TestNewAgentNeedsOnlyItsDefinition(t *testing.T) {
 		t.Fatal(err)
 	}
 	prompt := "add tests"
-	command, err := got.LaunchCommand(&prompt)
+	command, err := got.LaunchCommand(&prompt, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

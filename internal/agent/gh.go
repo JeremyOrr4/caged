@@ -9,6 +9,6 @@ func gh() Agent {
 		ConfigPaths: []ConfigPath{
 			{HostPath: ".config/gh", ContainerPath: ".config/gh", Writable: true},
 		},
-		Auth: AuthStrategy{Environment: []string{"GH_TOKEN", "GITHUB_TOKEN"}, CredentialPaths: []string{".config/gh/hosts.yml"}},
+		Auth: AuthStrategy{Environment: []string{"GH_TOKEN", "GITHUB_TOKEN"}},
 	}
 }

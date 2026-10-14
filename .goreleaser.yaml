@@ -1,0 +1,37 @@
+version: 2
+project_name: caged
+
+builds:
+  - id: caged
+    main: ./cmd/caged
+    binary: caged
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: caged
+    formats: [tar.gz]
+    name_template: "caged_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+
+# The release notes are the CHANGELOG section of the version; the release
+# workflow extracts it and passes it with --release-notes.
+changelog:
+  disable: true
+
+release:
+  # A tag with a -rc suffix is a prerelease: it is on GitHub but is not "latest",
+  # and the Homebrew formula never points at it.
+  prerelease: auto

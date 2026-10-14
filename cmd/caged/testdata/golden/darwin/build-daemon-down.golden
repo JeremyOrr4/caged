@@ -8,5 +8,5 @@ Docker is installed but the daemon is unavailable; start Docker Desktop: Cannot 
 === docker invocations
 info
 --format
-{{.ServerVersion}}
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
 ---

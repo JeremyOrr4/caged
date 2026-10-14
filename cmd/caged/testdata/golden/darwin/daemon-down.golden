@@ -7,11 +7,7 @@ leftover temp entries: 0
 WARNING: allowlisted agent credentials are available inside the container.
 Docker is installed but the daemon is unavailable; start Docker Desktop: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?
 === docker invocations
-image
-inspect
-caged-runtime:latest
----
 info
 --format
-{{.ServerVersion}}
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
 ---

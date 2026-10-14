@@ -1,0 +1,80 @@
+args: ["claude"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+fake docker build output
+fake docker run output
+=== stderr
+WARNING: allowlisted agent credentials are available inside the container.
+Building image extension from ~/.config/caged/image.json (apt: neovim, tmux)...
+=== docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
+image
+inspect
+caged-runtime:latest
+---
+image
+inspect
+caged-runtime:ext
+---
+build
+-t
+caged-runtime:ext
+--label
+io.github.jeremyorr4.caged.base-id=sha256:fake-base
+--label
+io.github.jeremyorr4.caged.extension-hash=$EXT_HASH
+--label
+io.github.jeremyorr4.caged.role=extension
+--label
+io.github.jeremyorr4.caged.version=test
+--iidfile
+$ROOT/tmp/caged-extension-N/image-id
+-f
+$ROOT/tmp/caged-extension-N/Dockerfile
+$ROOT/tmp/caged-extension-N
+---
+build context Dockerfile: $CKSUM
+---
+run
+-it
+--rm
+-v
+$ROOT/work/project:/workspace/project
+-w
+/workspace/project
+-v
+$ROOT/home/.claude:/home/caged/.claude
+-v
+$ROOT/home/.codex:/home/caged/.codex
+--tmpfs
+/home/caged/.codex/app-server-control
+--tmpfs
+/home/caged/.codex/app-server-daemon
+--tmpfs
+/home/caged/.codex/ipc
+--tmpfs
+/home/caged/.codex/packages/app-server-daemon
+--tmpfs
+/home/caged/.codex/tmp/arg0
+-v
+$ROOT/home/.copilot:/home/caged/.copilot
+-v
+$ROOT/home/.gemini/oauth_creds.json:/home/caged/.gemini/oauth_creds.json
+-v
+$ROOT/home/.gemini/settings.json:/home/caged/.gemini/settings.json
+-v
+$ROOT/home/.config/gh:/home/caged/.config/gh
+-v
+$ROOT/home/.pi:/home/caged/.pi
+-v
+$ROOT/home/.gitconfig:/home/caged/.gitconfig:ro
+-e
+CAGED_RETURN_TO_SHELL=1
+caged-runtime:ext
+claude
+---
