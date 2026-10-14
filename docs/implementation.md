@@ -36,7 +36,7 @@ make vet
 ```
 
 The development image is `dev/Dockerfile`; the runtime Dockerfile and entrypoint
-under `internal/runtime/` are embedded in the binary. Command-line parsing,
+under `internal/images/` are embedded in the binary. Command-line parsing,
 agent data, host-config resolution, project validation, run planning, Docker
 execution, and application coordination are separated into `internal/cli`,
 `internal/agent`, `internal/hostconfig`, `internal/project`, `internal/plan`,
