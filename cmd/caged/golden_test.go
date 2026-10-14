@@ -221,6 +221,12 @@ func goldenCases() []goldenCase {
 			images: map[string]fakeImage{images.BaseRef: currentBase(), images.ExtensionRef: currentExtension([]string{"neovim", "tmux"}, "sha256:fake-base")},
 		},
 		{
+			name:  "extension-xdg-config-home",
+			args:  []string{"--no-config", "claude"},
+			env:   map[string]string{"XDG_CONFIG_HOME": "$ROOT/xdg"},
+			files: map[string]string{"xdg/caged/image.json": `{"apt": ["tmux"]}`},
+		},
+		{
 			name:   "extension-stale-after-edit",
 			args:   []string{"--no-config", "claude"},
 			files:  map[string]string{goldenExtensionFile: `{"apt": ["neovim", "tmux", "shellcheck"]}`},
@@ -331,7 +337,7 @@ func runGoldenCase(t *testing.T, tc goldenCase, platform system.Platform, agents
 		"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
 		"GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME",
-		"CAGED_GOLDEN_SET", "CAGED_GOLDEN_UNSET",
+		"CAGED_GOLDEN_SET", "CAGED_GOLDEN_UNSET", "XDG_CONFIG_HOME",
 	} {
 		unsetEnv(t, name)
 	}
