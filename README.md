@@ -1,110 +1,78 @@
 # caged
 
-[![ci](https://github.com/JeremyOrr4/caged/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/JeremyOrr4/caged/actions/workflows/ci.yml)
+[![CI](https://github.com/JeremyOrr4/caged/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/JeremyOrr4/caged/actions/workflows/ci.yml)
 
-`caged` runs Claude Code, Codex, Gemini CLI, Pi, or GitHub Copilot CLI in a disposable Docker
-container. The GitHub CLI (`gh`) is also available inside its shell. It mounts the directory you started in at
-`/workspace/<folder-name>` and uses one image containing every supported CLI.
-Docker Desktop is the supported runtime on macOS; Linux is best effort.
+Run Claude Code, Codex, Gemini CLI, Pi, GitHub Copilot CLI, or `gh` in a disposable Docker container. Caged mounts your project into the container and keeps agent logins in your host config directories.
+
+Docker Desktop on macOS is the supported setup. Linux is best effort.
+
+## Install
+
+```sh
+brew install jeremyorr4/tap/caged
+# or
+go install github.com/JeremyOrr4/caged/cmd/caged@latest
+```
+
+You can also download a macOS or Linux binary (amd64 or arm64) from the [releases page](https://github.com/JeremyOrr4/caged/releases). From a checkout, run `make build` to create `bin/caged`.
+
+Requires Docker Engine 25 or newer. The runtime image builds automatically on first launch. Use `caged build --no-cache` to refresh the agent CLIs in that image.
+
+## Quick start
+
+```sh
+caged                         # open a shell with the supported CLIs
+caged claude                  # launch Claude, then return to the container shell
+caged codex "fix the tests"   # start an agent with a prompt
+caged list                    # show agents and available credentials
+caged doctor                  # check Docker and the project setup
+```
+
+When the agent exits, you return to the container shell. Run `exit` to remove the container.
 
 ## Usage
 
-```sh
-caged                         # interactive shell with all CLIs available
-caged claude                  # launch an agent, then return to the container shell
-caged codex 'fix the tests'   # launch with an initial prompt
-caged copilot 'explain this code'  # launch GitHub Copilot CLI with a prompt
-caged gh                           # run gh, then return to the container shell
-caged claude -- --resume      # pass flags to the agent after --
-caged codex 'fix tests' -- --model o4  # prompt first, then the agent's flags
-caged build [--no-cache]      # build or refresh the runtime image
-caged list                    # list agents, their detected host config, and which auth env vars are set
-caged doctor                  # check Docker, the images, and that this directory can be mounted
-caged clean [--dry-run]       # remove caged's Docker images
+```text
+caged [caged options] [agent [prompt]] [-- agent options...]
 ```
 
-The initial prompt is passed as one argument according to each agent's launch
-style. The prompt is not interpreted by a shell. After an agent exits, caged
-opens a shell in the same container; `exit` removes it.
+Supported agents: `claude`, `codex`, `gemini`, `pi`, `copilot`, and `gh`. With no agent, caged opens a shell. A prompt is passed directly to the agent, not through a shell. For example, Codex prompts use `codex exec`.
 
-Everything after `--` goes to the agent unchanged, after the prompt, and never
-through a shell. The order is: caged's flags, the agent, the prompt, `--`, the
-agent's flags. caged's flags (`--verbose`, `-p`, ...) are not recognized after
-the agent name or after `--`; there they belong to the agent. `--` needs an
-agent before it (`caged -- --resume` is an error). With a prompt, Codex runs
-`codex exec`, so its flags must be `exec` flags. `--verbose` prints the
-final command as `command: [...]`.
-
-Existing `~/.claude`, `~/.codex`, `~/.gemini`, `~/.pi`,
-`~/.copilot`, `~/.config/pi`, and `~/.config/gh` paths are mounted read-write. Changes,
-including credentials created by logging in inside the container, persist on
-the host. The shared `~/.gitconfig` is mounted read-only. On macOS, Claude
-Code's Keychain login is not forwarded; log in once
-inside caged or pass an API key. Credential files in mounted config folders are
-available to the container. SSH keys, cloud credential directories, and the
-Docker socket are never mounted. Use `--no-config` to disable all config mounts.
-The container login credential is stored as a plaintext file in the mounted
-config directory on the host.
-Copilot CLI can authenticate with `copilot login --device-code`; its config
-directory is mounted so the login can persist between caged runs. It can also
-use `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` passed with `--env`.
-For GitHub CLI authentication, create `~/.config/gh` on the host before the
-first run if it does not exist, then run `gh auth login` inside caged. Its
-configuration and login persist in that mounted directory. `GH_TOKEN` and
-`GITHUB_TOKEN` are also forwarded when set on the host.
-Claude Code uses `/home/caged/.claude` as its config directory inside the
-container. This lets its configuration and credentials persist through the
-directory mount; the host's `~/.claude.json` is intentionally not shared.
-
-Environment variables are forwarded by name only, and only when set on the
-host. Use repeatable `--env NAME` for additional names. Values are never shown
-by caged.
+Options go before the agent. Everything after `--` goes to the agent unchanged:
 
 ```sh
-caged claude --env ANTHROPIC_API_KEY
+caged claude -- --resume
+caged codex "fix tests" -- --model o4
 caged --workdir ~/code/my-project pi
-caged --no-mount
-caged -p 3000 claude          # publish container port 3000 on 127.0.0.1:3000
-caged -p 8080:3000 -p 5173    # host port 8080 -> container 3000; 5173 -> 5173
+caged --env ANTHROPIC_API_KEY claude
+caged -p 8080:3000 claude
 ```
 
-For safety, mounting `/` or your entire home directory requires
-`--allow-broad-mount`. macOS bind mounts can be slower for large dependency
-trees.
+| Option | Purpose |
+| --- | --- |
+| `-w, --workdir DIR` | Mount `DIR` as the project directory. Defaults to the current directory. |
+| `--no-mount` | Do not mount a project directory. |
+| `--no-config` | Do not mount agent or Git configuration. |
+| `--env NAME` | Forward a set host environment variable by name. Repeat as needed. |
+| `-p, --publish PORT` | Publish a TCP port on `127.0.0.1`. Accepts `PORT` or `HOST_PORT:CONTAINER_PORT`; repeat as needed. |
+| `--allow-broad-mount` | Allow mounting `/` or your entire home directory. |
+| `--verbose` | Show config files and environment variable names passed to the container. |
 
-### Doctor, list, and clean
+For published ports, services inside the container must listen on `0.0.0.0`. Without `-p`, container ports are not available on the host.
 
-`caged doctor` checks the setup, one line per check: `docker` (installed), `daemon` (running, and its
-engine version: Docker Engine 25.0 or newer is expected), `image` (current, missing, or stale),
-`extension` and `ext-image` (the image.json file and its image), `arch` (the image matches Docker's
-CPU architecture), `project` (this directory, or `-w DIR`, can be mounted) and `versions` (the CLI
-versions inside the image). A check that depends on a failed one is skipped. It exits 1 only when a
-check fails, and it never builds or removes anything. Paste its output into a bug report: the first
-line is the caged version and platform, and it never prints environment values.
+## Files and credentials
 
-`caged list` shows each agent, the host config a run would mount for it (with `~` for your home
-directory), and which of its credential variables are set. Only names appear, never values.
+- The project directory is mounted read-write at `/workspace/<folder-name>`.
+- Existing agent config directories (including `~/.claude`, `~/.codex`, `~/.gemini`, `~/.pi`, `~/.copilot`, `~/.config/pi`, and `~/.config/gh`) are mounted read-write. Logins and config changes persist on the host.
+- `~/.gitconfig` is mounted read-only. SSH keys, cloud credential directories, and the Docker socket are not mounted.
+- Only selected environment variable names are forwarded, and only when set on the host. Values are never printed. Use `--env NAME` to pass another variable.
+- Mounting `/` or your whole home directory requires `--allow-broad-mount`.
 
-### Uninstall
+On macOS, Claude Code’s Keychain login is not forwarded; log in inside caged or pass an API key. The host’s `~/.claude.json` is not mounted. For GitHub CLI login, create `~/.config/gh` on the host, then run `gh auth login` inside caged.
 
-`caged clean` removes caged's images (the runtime image, the extension image, and any replaced or
-older ones). Use `caged clean --dry-run` to see what it would remove first. An image that a container
-still uses is kept and reported. It never touches containers, volumes, the Docker build cache
-(`docker builder prune` clears that), `~/.config/caged`, or your agents' own config. To uninstall:
+## Customize the image
 
-```sh
-caged clean
-# remove the binary the way you installed it, e.g. rm "$(command -v caged)"
-rm -rf ~/.config/caged     # only if you created an image.json
-```
-
-Your agents' config (`~/.claude`, `~/.codex`, ...) is yours and is left alone.
-
-### Extra packages
-
-To add apt packages to the image, create `~/.config/caged/image.json` (or
-`$XDG_CONFIG_HOME/caged/image.json` when `XDG_CONFIG_HOME` is set to an
-absolute path):
+To install extra apt packages, create `~/.config/caged/image.json` (or `$XDG_CONFIG_HOME/caged/image.json` when `XDG_CONFIG_HOME` is an absolute path):
 
 ```json
 {
@@ -112,70 +80,26 @@ absolute path):
 }
 ```
 
-Only `apt` is supported, with plain package names (no version or architecture
-suffix). The file is yours alone: a project cannot add one, and it is never
-mounted into the container. caged builds a second image, `caged-runtime:ext`,
-on top of the runtime image, and every run and `caged build` uses it. The
-first run after you edit the file takes a minute to rebuild; reordering the
-packages does not rebuild. A mistake in the file (a bad name, or a package apt
-cannot find) stops every run until you fix or remove it. Remove the file to go
-back to the plain image.
+Only plain apt package names are supported. This file is read from your home config and is never mounted into the container. Caged builds an extension image when the file changes; remove it to use the default image again.
 
-### Ports
-
-`-p PORT` and `-p HOST_PORT:CONTAINER_PORT` (also `--publish`, repeatable)
-publish a container port over TCP, always on `127.0.0.1`, so nothing on your
-network can reach it. There is no host-address form, no port range, and no
-`/udp`. A server inside the container must listen on `0.0.0.0` (not on
-`localhost`) to be reachable, for example `vite --host 0.0.0.0`,
-`next dev -H 0.0.0.0` or `python3 -m http.server --bind 0.0.0.0`. If
-`http://localhost:PORT` does not connect, use `http://127.0.0.1:PORT`. Without
-`-p`, no port is published, so services in the container are not reachable
-through the host's `localhost`.
-
-## Install
+## Maintenance
 
 ```sh
-brew install jeremyorr4/tap/caged          # builds from source with Homebrew's Go
-go install github.com/JeremyOrr4/caged/cmd/caged@latest
+caged build [--no-cache]     # build or refresh the image
+caged doctor                 # diagnose Docker, image, and mount setup
+caged list                   # show agents and which credentials are set
+caged clean --dry-run        # preview images that would be removed
+caged clean                  # remove caged images
 ```
 
-Or download an archive for macOS or Linux (amd64 or arm64) from the
-[releases page](https://github.com/JeremyOrr4/caged/releases), and put `caged` on your `PATH`.
-A binary downloaded from a browser may be quarantined by macOS; clear that with
-`xattr -d com.apple.quarantine caged`. The Homebrew install builds locally and avoids it.
-From a checkout: `make build` (the binary is `bin/caged`).
-
-The runtime image is built locally on first launch (a few minutes), and rebuilt
-automatically after an upgrade that changes it (once, with a message saying why).
-`caged build --no-cache` refreshes the installed CLI versions. To upgrade:
-`brew upgrade caged`, or install again with `go install`.
-
-## Requirements
-
-- Docker: Docker Desktop on macOS (the supported setup), or Docker Engine on Linux (best effort).
-  Docker Engine 25.0 or newer is expected; `caged doctor` warns about older versions and never blocks a run.
-- macOS or Linux, on amd64 or arm64. Homebrew builds caged with its own Go; `go install` needs
-  Go 1.27 or newer.
+`doctor` does not build or remove anything. `clean` leaves containers, volumes, Docker’s build cache, and your agent configs alone. Images used by a running container are kept.
 
 ## Development
 
 ```sh
 make build
 make test
-make check   # everything CI runs: format, tidy, vet, race tests, lint, vuln, cross-build
+make check
 ```
 
-`make check` needs `golangci-lint` (v2) and `govulncheck` on your `PATH`:
-
-```sh
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-go install golang.org/x/vuln/cmd/govulncheck@latest
-```
-
-Pull requests target `dev`; see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-The development image uses [dev/Dockerfile](dev/Dockerfile); the embedded
-runtime image is defined in `internal/images/Dockerfile`. The package layout,
-the dependency rules, and how to add an agent are described in
-[docs/architecture.md](docs/architecture.md).
+`make check` runs formatting, dependency, vet, race, lint, vulnerability, and cross-build checks. It requires `golangci-lint` v2 and `govulncheck` on `PATH`. `go install` requires Go 1.27 or newer. Pull requests target `dev`; see [CONTRIBUTING.md](CONTRIBUTING.md). For architecture and agent development, see [docs/architecture.md](docs/architecture.md).
