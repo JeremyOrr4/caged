@@ -1,5 +1,6 @@
 .PHONY: build run test fmt vet install clean docker-build docker-shell \
-	check fmt-check tidy-check test-race lint vuln cross-build release-snapshot
+	check fmt-check tidy-check test-race lint vuln cross-build \
+	test-release-scripts release-check release-snapshot
 
 IMAGE_NAME := caged-dev
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -56,8 +57,22 @@ cross-build:
 		GOOS=$${target%/*} GOARCH=$${target#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/caged || exit 1; \
 	done
 
+test-release-scripts:
+	bash scripts/next-version_test.sh
+	bash scripts/check-pr-commits_test.sh
+
+# release-check runs the project's quality checks and validates both the
+# release script and GoReleaser packaging configuration without publishing.
+release-check:
+	$(MAKE) check
+	$(MAKE) test-release-scripts
+	@version="$$(goreleaser --version)"; echo "$$version"; \
+	  case "$$version" in *2.18.3*) ;; *) echo "expected GoReleaser v2.18.3" >&2; exit 1 ;; esac
+	goreleaser check
+	$(MAKE) release-snapshot
+
 # release-snapshot builds the release archives locally, without publishing
 # anything. Install goreleaser first:
-#   go install github.com/goreleaser/goreleaser/v2@latest
+#   go install github.com/goreleaser/goreleaser/v2@v2.18.3
 release-snapshot:
 	goreleaser release --snapshot --clean
