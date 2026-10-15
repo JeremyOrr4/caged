@@ -1,0 +1,8 @@
+args: ["--no-mount"]
+exit code: 1
+error: ~/.config/caged/config.yaml: invalid YAML: line 1: did not find expected node content
+leftover temp entries: 0
+=== stdout
+=== stderr
+~/.config/caged/config.yaml: invalid YAML: line 1: did not find expected node content
+=== docker invocations

@@ -9,26 +9,28 @@ import (
 	"github.com/JeremyOrr4/caged/internal/plan"
 )
 
-// validateMaskedConfigTree accepts a directory that will be mounted whole. It
-// fails on any symlink that leaves root and on any special file (socket, FIFO,
-// device) that is not inside one of the masked paths.
-func validateMaskedConfigTree(fsys FileSystem, root string, masks []string) error {
+// validateMaskedConfigTree accepts a directory that will be mounted whole and
+// returns its symlinks that leave root or cannot be resolved. It fails on any
+// special file (socket, FIFO, device) that is not inside one of the masked
+// paths.
+func validateMaskedConfigTree(fsys FileSystem, root string, masks []string) ([]string, error) {
 	rootInfo, err := fsys.Stat(root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !rootInfo.IsDir() {
-		return fmt.Errorf("masked config root must be a directory")
+		return nil, fmt.Errorf("masked config root must be a directory")
 	}
 	maskPaths := make([]string, 0, len(masks))
 	for _, mask := range masks {
 		clean := filepath.Clean(mask)
 		if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("invalid config mask path %q", mask)
+			return nil, fmt.Errorf("invalid config mask path %q", mask)
 		}
 		maskPaths = append(maskPaths, filepath.Join(root, clean))
 	}
-	return fsys.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	var outside []string
+	if err := fsys.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -47,9 +49,8 @@ func validateMaskedConfigTree(fsys FileSystem, root string, masks []string) erro
 			return err
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			resolved, err := fsys.EvalSymlinks(path)
-			if err != nil || !isWithin(resolved, root) {
-				return fmt.Errorf("symlink %q resolves outside the config directory or cannot be resolved", path)
+			if resolved, err := fsys.EvalSymlinks(path); err != nil || !isWithin(resolved, root) {
+				outside = append(outside, path)
 			}
 			return nil
 		}
@@ -57,14 +58,16 @@ func validateMaskedConfigTree(fsys FileSystem, root string, masks []string) erro
 			return fmt.Errorf("special file %q is not covered by a config mask", path)
 		}
 		return nil
-	})
+	}); err != nil {
+		return nil, err
+	}
+	return outside, nil
 }
 
 // collectSafeMounts returns the largest subtrees of root that contain only
-// regular files and directories, plus a reason for every entry it skipped.
-func collectSafeMounts(fsys FileSystem, root string) ([]string, []plan.Refusal) {
-	var mounts []string
-	var refused []plan.Refusal
+// regular files and directories, plus the symlinks it found and a reason for
+// every other entry it skipped.
+func collectSafeMounts(fsys FileSystem, root string) (mounts, links []string, refused []plan.Refusal) {
 	var collect func(string)
 	collect = func(path string) {
 		entries, err := fsys.ReadDir(path)
@@ -92,23 +95,25 @@ func collectSafeMounts(fsys FileSystem, root string) ([]string, []plan.Refusal) 
 				collect(child)
 			} else if info.Mode().IsRegular() {
 				mounts = append(mounts, child)
+			} else if info.Mode()&fs.ModeSymlink != 0 {
+				links = append(links, child)
 			} else {
-				refused = append(refused, plan.Refusal{Path: child, Reason: "symlinks and special files are excluded from config mounts"})
+				refused = append(refused, plan.Refusal{Path: child, Reason: "special files are excluded from config mounts"})
 			}
 		}
 	}
 	info, err := fsys.Lstat(root)
 	if err != nil {
-		return nil, []plan.Refusal{{Path: root, Reason: "cannot inspect config root safely"}}
+		return nil, nil, []plan.Refusal{{Path: root, Reason: "cannot inspect config root safely"}}
 	}
 	if info.Mode().IsRegular() {
-		return []string{root}, nil
+		return []string{root}, nil, nil
 	}
 	if !info.IsDir() {
-		return nil, []plan.Refusal{{Path: root, Reason: "config root is not a regular file or directory"}}
+		return nil, nil, []plan.Refusal{{Path: root, Reason: "config root is not a regular file or directory"}}
 	}
 	collect(root)
-	return mounts, refused
+	return mounts, links, refused
 }
 
 // subtreeIsSafe reports whether root contains only regular files and directories.

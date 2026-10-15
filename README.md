@@ -64,23 +64,64 @@ For published ports, services inside the container must listen on `0.0.0.0`. Wit
 
 - The project directory is mounted read-write at `/workspace/<folder-name>`.
 - Existing agent config directories (including `~/.claude`, `~/.codex`, `~/.gemini`, `~/.pi`, `~/.copilot`, `~/.config/pi`, and `~/.config/gh`) are mounted read-write. Logins and config changes persist on the host.
+- Symlinks inside those directories are followed only as described under [Configuration](#configuration).
 - `~/.gitconfig` is mounted read-only. SSH keys, cloud credential directories, and the Docker socket are not mounted.
 - Only selected environment variable names are forwarded, and only when set on the host. Values are never printed. Use `--env NAME` to pass another variable.
 - Mounting `/` or your whole home directory requires `--allow-broad-mount`.
 
 On macOS, Claude Code’s Keychain login is not forwarded; log in inside caged or pass an API key. The host’s `~/.claude.json` is not mounted. For GitHub CLI login, create `~/.config/gh` on the host, then run `gh auth login` inside caged.
 
-## Customize the image
+## Configuration
 
-To install extra apt packages, create `~/.config/caged/image.json` (or `$XDG_CONFIG_HOME/caged/image.json` when `XDG_CONFIG_HOME` is an absolute path):
+Caged reads one optional file, `~/.config/caged/config.yaml` (or `$XDG_CONFIG_HOME/caged/config.yaml` when `XDG_CONFIG_HOME` is an absolute path). It is read from your home config on the host and is never mounted into the container. Every key is optional, and a missing file means the defaults.
 
-```json
-{
-  "apt": ["neovim", "tmux", "shellcheck"]
-}
+```yaml
+version: 1                 # optional; if present it must be 1
+image:
+  apt: [postgresql-client] # extra apt packages in the runtime image
+links:
+  allow:                   # roots that symlinks in agent config may point into
+    - path: ~/git/misc/dotfiles
+      read_only: false     # true: mounts through this root are read-only
+  deny: [~/secrets]        # added to the built-in deny list
+workdirs:                  # optional; without it any project directory may be mounted
+  allow:
+    - path: ~/git
 ```
 
-Only plain apt package names are supported. This file is read from your home config and is never mounted into the container. Caged builds an extension image when the file changes; remove it to use the default image again.
+Paths must be absolute or start with `~/`; caged does not expand variables. Quote a lone `"~"`, because an unquoted `~` is YAML for null. An unknown key, a wrong type, or an invalid package name stops caged before it calls Docker, and the error names the file and line. The old `image.json` is no longer read; `caged doctor` warns if one is still there.
+
+### Extra packages
+
+`image.apt` lists plain apt package names (no versions, no shell syntax). Caged builds an extension image when the list changes; remove the list to use the default image again.
+
+### Symlinked agent config
+
+Agent config directories such as `~/.claude` can hold symlinks, for example when dotfiles are managed with GNU Stow. Caged follows each symlink on the host, checks the target, and mounts the target at the place the link points inside the container. The container never sees the host's links.
+
+- A link whose target stays inside its own config folder needs nothing.
+- Any other target must be under a root in `links.allow`. This is the strict default: without the file, only links inside their own folder work.
+- The built-in deny list always wins and cannot be overridden: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.kube`, `~/.docker`, `~/.config/gcloud`, `~/.password-store`, `~/.netrc`, `~/.git-credentials`, `~/.local/share/keyrings`, `~/Library/Keychains`, `~/.config/caged`, `/etc`, `/run` and `/var/run`. A link to a directory that contains one of them is refused too.
+- A root that contains your home directory (`/` or `~`) is refused as too broad.
+- Targets are mounted read-write, so an agent can edit your dotfiles through the link. Set `read_only: true` on a root to mount through it read-only.
+
+A refused link is not mounted, and the message says what to add. See them with `caged --verbose`, or with the `links` row of `caged doctor`:
+
+```text
+config: refused ~/.claude/CLAUDE.md (symlink target ~/dotfiles/claude/CLAUDE.md is not under links.allow); add "- path: ~/dotfiles/claude" under links.allow in ~/.config/caged/config.yaml
+```
+
+With GNU Stow, one root usually covers everything:
+
+```yaml
+links:
+  allow:
+    - path: ~/dotfiles
+```
+
+### Project directories
+
+When `workdirs.allow` is set, the project directory must be under one of its roots, or caged refuses to start. `--allow-broad-mount` does not bypass it. An empty list refuses every directory.
 
 ## Maintenance
 

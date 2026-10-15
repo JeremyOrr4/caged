@@ -8,7 +8,7 @@ fake docker run output
 env: skipped ANTHROPIC_API_KEY (unset or disallowed)
 command: ["claude"]
 image: caged-runtime:latest is current (runtime $RUNTIME_HASH12)
-image: extension from ~/.config/caged/image.json (apt: neovim, tmux) -> caged-runtime:ext
+image: extension from ~/.config/caged/config.yaml (apt: neovim, tmux) -> caged-runtime:ext
 === docker invocations
 info
 --format

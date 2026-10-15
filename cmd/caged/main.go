@@ -14,10 +14,10 @@ import (
 	"github.com/JeremyOrr4/caged/internal/app"
 	"github.com/JeremyOrr4/caged/internal/cli"
 	"github.com/JeremyOrr4/caged/internal/docker"
-	"github.com/JeremyOrr4/caged/internal/extension"
 	"github.com/JeremyOrr4/caged/internal/hostconfig"
 	"github.com/JeremyOrr4/caged/internal/project"
 	"github.com/JeremyOrr4/caged/internal/system"
+	"github.com/JeremyOrr4/caged/internal/userconfig"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -32,18 +32,18 @@ func main() {
 // process exit code. When the container fails, its exit code is passed on.
 func run(ctx context.Context, version string, args []string, stdio system.Stdio, platform system.Platform, agents *agent.Registry) int {
 	fsys, env := system.FS{}, system.Env{}
-	configs := hostconfig.NewResolver(fsys, env, agents.All(), hostconfig.DefaultSharedFiles())
-	projects := project.NewResolver(fsys)
+	store := userconfig.NewStore(fsys, env)
+	configs := hostconfig.NewResolver(fsys, env, agents.All(), hostconfig.DefaultSharedFiles(), store)
+	projects := project.NewResolver(fsys, store)
 	planner := app.NewPlanner(env, projects, configs)
 	client := docker.NewClient(system.Executor{}, fsys, platform, stdio)
-	exts := extension.NewLoader(fsys, env)
 	ensurer := app.NewImageEnsurer(client, version)
 	services := cli.Services{
-		Run:   app.NewRunner(exts, planner, client, ensurer, client, stdio.Err),
-		Build: app.NewBuilder(exts, client, ensurer, stdio.Err),
+		Run:   app.NewRunner(store, planner, client, ensurer, client, stdio.Err),
+		Build: app.NewBuilder(store, client, ensurer, stdio.Err),
 		Doctor: app.NewDoctor(app.DoctorDeps{
-			Daemon: client, Store: client, Prober: client, Extensions: exts, Project: projects,
-			Env: env, Host: app.Host{OS: platform.OS, Arch: platform.Arch}, Version: version,
+			Daemon: client, Store: client, Prober: client, Extensions: store, Config: store, Configs: configs,
+			Project: projects, Env: env, Host: app.Host{OS: platform.OS, Arch: platform.Arch}, Version: version,
 		}),
 		List:  app.NewLister(env, configs, agents.All()),
 		Clean: app.NewCleaner(client, client, client),

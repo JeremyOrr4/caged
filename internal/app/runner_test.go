@@ -115,7 +115,7 @@ func TestRunnerRun(t *testing.T) {
 			store:      fakeStore{images: baseImage(currentImage(version))},
 			verbose:    true,
 			wantCalls:  []string{"load", "plan", "daemon", inspectBase, "run"},
-			wantStderr: "image: no extension (~/.config/caged/image.json not found)\nimage: " + images.Base(version).Describe() + "\n",
+			wantStderr: "image: no image.apt packages in ~/.config/caged/image.json\nimage: " + images.Base(version).Describe() + "\n",
 			wantImage:  images.BaseRef,
 		},
 	}

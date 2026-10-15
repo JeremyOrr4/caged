@@ -175,6 +175,29 @@ func TestRunArgs(t *testing.T) {
 				images.BaseRef,
 			},
 		},
+		{
+			name: "a followed symlink that is not writable mounts read-only",
+			options: plan.RunSpec{
+				Image: images.BaseRef,
+				ConfigMounts: []plan.ConfigMount{{
+					Agent:    "claude",
+					Name:     ".claude",
+					HostPath: "/home/test/dotfiles/claude/CLAUDE.md",
+					DestPath: "/home/caged/.claude/CLAUDE.md",
+					Link:     "/home/test/.claude/CLAUDE.md",
+					Writable: false,
+				}},
+			},
+			goos: "linux",
+			uid:  3001,
+			gid:  3002,
+			want: []string{
+				"run", "-it", "--rm",
+				"-v", "/home/test/dotfiles/claude/CLAUDE.md:/home/caged/.claude/CLAUDE.md:ro",
+				"--user", "3001:3002",
+				images.BaseRef,
+			},
+		},
 	}
 
 	for _, tt := range tests {

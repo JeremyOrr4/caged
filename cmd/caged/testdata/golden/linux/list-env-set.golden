@@ -7,7 +7,7 @@ AGENT    CONFIG               AUTH ENV SET
 claude   ~/.claude            ANTHROPIC_API_KEY
 codex    ~/.codex             ANTHROPIC_API_KEY
 copilot  ~/.copilot           GH_TOKEN
-gemini   ~/.gemini (2 files)  -
+gemini   ~/.gemini (3 files)  -
 gh       ~/.config/gh         GH_TOKEN
 pi       ~/.pi                ANTHROPIC_API_KEY
 === stderr

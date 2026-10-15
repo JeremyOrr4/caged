@@ -18,6 +18,8 @@ type ConfigMount struct {
 	Root      string
 	Writable  bool
 	MaskPaths []string
+	// Link is the host symlink this mount follows; "" for a direct mount.
+	Link string
 }
 
 // ConfigReport is the outcome of host config discovery: the mounts to make,
@@ -29,10 +31,21 @@ type ConfigReport struct {
 }
 
 // Refusal is a host config path that is not mounted, and why.
-type Refusal struct{ Path, Reason string }
+type Refusal struct {
+	Path, Reason string
+	// Hint is what the user can do about it; may be empty.
+	Hint string
+}
 
-// String formats the refusal as "path (reason)".
-func (r Refusal) String() string { return r.Path + " (" + r.Reason + ")" }
+// String formats the refusal as "path (reason)", followed by "; hint" when
+// there is a hint.
+func (r Refusal) String() string {
+	text := r.Path + " (" + r.Reason + ")"
+	if r.Hint != "" {
+		text += "; " + r.Hint
+	}
+	return text
+}
 
 // RunSpec is an immutable-by-convention description consumed by a runtime adapter.
 type RunSpec struct {
@@ -59,10 +72,21 @@ type BuildSpec struct {
 type BuildOptions struct{ NoCache bool }
 
 // Extension is the user's request for extra packages in the image, read from
-// image.json. Apt is sorted and has no duplicates.
+// config.yaml (image.apt). Apt is sorted and has no duplicates.
 type Extension struct {
 	Source string // the file it came from, shown with ~ for the home directory
 	Apt    []string
+}
+
+// ConfigStatus summarizes the user's config file for caged doctor.
+type ConfigStatus struct {
+	Source       string   // the file, shown with ~, whether or not it exists
+	Found        bool     // the file exists
+	Apt          []string // image.apt, sorted
+	LinkAllow    int      // number of links.allow roots
+	Workdirs     bool     // the workdirs key is present
+	WorkdirAllow int      // number of workdirs.allow roots
+	Legacy       string   // a leftover image.json, shown with ~; "" when there is none
 }
 
 // Label is one image label.

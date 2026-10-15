@@ -10,6 +10,7 @@ import (
 
 	"github.com/JeremyOrr4/caged/internal/engine"
 	"github.com/JeremyOrr4/caged/internal/images"
+	"github.com/JeremyOrr4/caged/internal/plan"
 )
 
 func TestOlderThan(t *testing.T) {
@@ -65,19 +66,22 @@ func TestStatusAndReport(t *testing.T) {
 }
 
 // doctorCase is one scenario for Diagnose. The zero value is a healthy Linux
-// machine with a current runtime image and no extension.
+// machine with a current runtime image and no config file.
 type doctorCase struct {
-	host     Host
-	daemon   fakeDaemon
-	images   map[string]engine.ImageInfo // nil means only a current runtime image
-	exts     fakeExts
-	versions string
-	readErr  error
-	probeErr error
-	workDir  string
-	project  *fakeProject
-	env      *fakeEnv
-	version  string
+	host      Host
+	daemon    fakeDaemon
+	images    map[string]engine.ImageInfo // nil means only a current runtime image
+	exts      fakeExts
+	status    *plan.ConfigStatus // nil means no config file
+	statusErr error
+	configs   *fakeConfigs // nil means no config mounts
+	versions  string
+	readErr   error
+	probeErr  error
+	workDir   string
+	project   *fakeProject
+	env       *fakeEnv
+	version   string
 }
 
 const healthyVersions = "claude=2.1.3\ncodex=0.46.0\ngemini=0.9.0\ncopilot=0.0.330\npi=0.12.0\ngh=2.81.0\n"
@@ -116,7 +120,16 @@ func (c doctorCase) diagnose(t *testing.T) (DoctorReport, []string) {
 	if env == nil {
 		env = &fakeEnv{home: "/home/me", wd: "/home/me/code/app"}
 	}
-	doctor := NewDoctor(DoctorDeps{Daemon: &daemon, Store: store, Prober: prober, Extensions: &exts, Project: project, Env: env, Host: c.host, Version: version})
+	status := plan.ConfigStatus{Source: "~/.config/caged/config.yaml"}
+	if c.status != nil {
+		status = *c.status
+	}
+	configFile := &fakeConfigFile{status: status, err: c.statusErr}
+	configs := c.configs
+	if configs == nil {
+		configs = &fakeConfigs{}
+	}
+	doctor := NewDoctor(DoctorDeps{Daemon: &daemon, Store: store, Prober: prober, Extensions: &exts, Config: configFile, Configs: configs, Project: project, Env: env, Host: c.host, Version: version})
 	report := doctor.Diagnose(context.Background(), DoctorOptions{WorkDir: c.workDir})
 	return report, calls
 }
@@ -138,7 +151,8 @@ func TestDoctorHealthyMachine(t *testing.T) {
 		"docker PASS /usr/local/bin/docker",
 		"daemon PASS Docker Desktop, engine 27.3.1, linux/amd64",
 		"image PASS caged-runtime:latest is current (runtime " + hash + ", built by caged 0.1.0)",
-		"extension PASS no extension file",
+		"config PASS no config file (~/.config/caged/config.yaml)",
+		"links PASS no symlinked config",
 		"ext-image PASS not used",
 		"arch PASS image linux/amd64 matches the Docker VM (amd64)",
 		"project PASS /home/me/code/app can be mounted",
@@ -194,16 +208,31 @@ func TestDoctorRows(t *testing.T) {
 		{name: "image stale", c: doctorCase{images: baseImage(staleBase)}, check: "image", want: "WARN caged-runtime:latest is out of date; the next run rebuilds it"},
 		{name: "image unlabeled", c: doctorCase{images: baseImage(engine.ImageInfo{ID: "sha256:x", Arch: "amd64"})}, check: "image", want: "WARN caged-runtime:latest is out of date; the next run rebuilds it"},
 
-		// extension
-		{name: "invalid extension file", c: doctorCase{exts: fakeExts{err: errors.New("~/.config/caged/image.json: unknown field \"npm\"; only \"apt\" is supported")}}, check: "extension", want: `FAIL ~/.config/caged/image.json: unknown field "npm"; only "apt" is supported`},
-		{name: "extension configured", c: doctorCase{exts: fakeExts{ext: ext}}, check: "extension", want: "PASS ~/.config/caged/image.json (apt: neovim, tmux)"},
+		// config
+		{name: "invalid config file", c: doctorCase{statusErr: errors.New(`~/.config/caged/config.yaml: line 1: unknown field "imgae"`)}, check: "config", want: `FAIL ~/.config/caged/config.yaml: line 1: unknown field "imgae"`},
+		{name: "config file the extension cannot load", c: doctorCase{exts: fakeExts{err: errors.New("~/.config/caged/config.yaml: bad apt")}}, check: "config", want: "FAIL ~/.config/caged/config.yaml: bad apt"},
+		{name: "config with packages and links", c: doctorCase{exts: fakeExts{ext: ext}, status: &plan.ConfigStatus{Source: "~/.config/caged/config.yaml", Found: true, Apt: []string{"neovim", "tmux"}, LinkAllow: 1}}, check: "config", want: "PASS ~/.config/caged/config.yaml (apt: neovim, tmux; links.allow: 1)"},
+		{name: "config with workdirs", c: doctorCase{status: &plan.ConfigStatus{Source: "~/.config/caged/config.yaml", Found: true, Workdirs: true, WorkdirAllow: 2}}, check: "config", want: "PASS ~/.config/caged/config.yaml (links.allow: 0; workdirs.allow: 2)"},
+		{name: "an empty config file", c: doctorCase{status: &plan.ConfigStatus{Source: "~/.config/caged/config.yaml", Found: true}}, check: "config", want: "PASS ~/.config/caged/config.yaml (links.allow: 0)"},
+		{name: "a leftover image.json", c: doctorCase{status: &plan.ConfigStatus{Source: "~/.config/caged/config.yaml", Legacy: "~/.config/caged/image.json"}}, check: "config", want: "WARN no config file (~/.config/caged/config.yaml); ~/.config/caged/image.json is no longer read: move its packages to image.apt in ~/.config/caged/config.yaml"},
+		{name: "a leftover image.json next to a config file", c: doctorCase{status: &plan.ConfigStatus{Source: "~/.config/caged/config.yaml", Found: true, Legacy: "~/.config/caged/image.json"}}, check: "config", want: "WARN ~/.config/caged/config.yaml (links.allow: 0); ~/.config/caged/image.json is no longer read: move its packages to image.apt in ~/.config/caged/config.yaml"},
+
+		// links
+		{name: "followed links are counted", c: doctorCase{configs: &fakeConfigs{report: plan.ConfigReport{Mounts: []plan.ConfigMount{{Name: ".claude"}, {Name: ".claude", Link: "/h/.claude/a"}, {Name: ".claude", Link: "/h/.claude/b"}}}}}, check: "links", want: "PASS 2 symlinked config mounts allowed"},
+		{name: "a refusal with a hint warns", c: doctorCase{configs: &fakeConfigs{report: plan.ConfigReport{Refused: []plan.Refusal{
+			{Path: "/h/.claude/skip", Reason: "dangling or unresolvable symlink"},
+			{Path: "/h/.claude/CLAUDE.md", Reason: "symlink target ~/dot/CLAUDE.md is not under links.allow", Hint: `add "- path: ~/dot" under links.allow in ~/.config/caged/config.yaml`},
+		}}}}, check: "links", want: `WARN /h/.claude/CLAUDE.md (symlink target ~/dot/CLAUDE.md is not under links.allow); add "- path: ~/dot" under links.allow in ~/.config/caged/config.yaml`},
+		{name: "a refusal without a hint is not a warning", c: doctorCase{configs: &fakeConfigs{report: plan.ConfigReport{Refused: []plan.Refusal{{Path: "/h/.claude/skip", Reason: "dangling or unresolvable symlink"}}}}}, check: "links", want: "PASS no symlinked config"},
+		{name: "the link policy cannot be loaded", c: doctorCase{configs: &fakeConfigs{err: errors.New("~/.config/caged/config.yaml: links.allow entry \"~\" is too broad: it contains the home directory")}}, check: "links", want: `FAIL ~/.config/caged/config.yaml: links.allow entry "~" is too broad: it contains the home directory`},
+		{name: "links need a home directory", c: doctorCase{env: &fakeEnv{homeErr: errors.New("unset"), wd: "/w"}}, check: "links", want: "FAIL find home directory: unset"},
 
 		// ext-image
 		{name: "extension not built yet", c: doctorCase{exts: fakeExts{ext: ext}}, check: "ext-image", want: "WARN caged-runtime:ext is not built yet; the next run builds it"},
 		{name: "extension image current", c: doctorCase{exts: fakeExts{ext: ext}, images: both(currentExtensionImage(*ext, "sha256:current", version))}, check: "ext-image", want: "PASS caged-runtime:ext is current (apt: neovim, tmux)"},
 		{name: "extension image stale", c: doctorCase{exts: fakeExts{ext: ext}, images: both(staleExt)}, check: "ext-image", want: "WARN caged-runtime:ext is out of date; the next run rebuilds it"},
 		{name: "extension image built on another base", c: doctorCase{exts: fakeExts{ext: ext}, images: both(currentExtensionImage(*ext, "sha256:other", version))}, check: "ext-image", want: "WARN caged-runtime:ext is out of date; the next run rebuilds it"},
-		{name: "extension image left over with no file", c: doctorCase{images: both(staleExt)}, check: "ext-image", want: "WARN caged-runtime:ext is no longer used (there is no extension file); caged clean removes it"},
+		{name: "extension image left over with no file", c: doctorCase{images: both(staleExt)}, check: "ext-image", want: "WARN caged-runtime:ext is no longer used (config.yaml lists no image.apt packages); caged clean removes it"},
 		{name: "extension needs the base image first", c: doctorCase{exts: fakeExts{ext: ext}, images: map[string]engine.ImageInfo{}}, check: "ext-image", want: "WARN caged-runtime:ext is not built yet; the next run builds it"},
 
 		// arch
@@ -255,7 +284,8 @@ func TestDoctorSkipsWhatDependsOnAFailure(t *testing.T) {
 			"docker PASS installed",
 			"daemon FAIL daemon unavailable",
 			"image SKIP needs daemon",
-			"extension PASS no extension file",
+			"config PASS no config file (~/.config/caged/config.yaml)",
+			"links PASS no symlinked config",
 			"ext-image SKIP needs daemon",
 			"arch SKIP needs daemon",
 			"project SKIP needs daemon",
@@ -281,11 +311,22 @@ func TestDoctorSkipsWhatDependsOnAFailure(t *testing.T) {
 			t.Fatalf("Diagnose() = %v", got)
 		}
 	})
-	t.Run("an invalid extension file skips the extension image only", func(t *testing.T) {
+	t.Run("an invalid config file skips what needs it", func(t *testing.T) {
 		t.Parallel()
-		report, _ := doctorCase{exts: fakeExts{err: errors.New("bad file")}}.diagnose(t)
+		report, _ := doctorCase{statusErr: errors.New("bad file")}.diagnose(t)
 		got := lines(report)
-		if got[3] != "extension FAIL bad file" || got[4] != "ext-image SKIP needs extension" || !strings.HasPrefix(got[2], "image PASS") || !strings.HasPrefix(got[7], "versions PASS") {
+		want := map[int]string{
+			3: "config FAIL bad file",
+			4: "links SKIP needs config",
+			5: "ext-image SKIP needs config",
+			7: "project SKIP needs config",
+		}
+		for index, line := range want {
+			if got[index] != line {
+				t.Fatalf("row %d = %q, want %q; Diagnose() = %v", index, got[index], line, got)
+			}
+		}
+		if !strings.HasPrefix(got[2], "image PASS") || !strings.HasPrefix(got[6], "arch PASS") || !strings.HasPrefix(got[8], "versions PASS") {
 			t.Fatalf("Diagnose() = %v", got)
 		}
 	})
@@ -320,7 +361,7 @@ func TestDoctorUsesTheWorkDirOption(t *testing.T) {
 	if !reflect.DeepEqual(calls[len(calls)-2:], []string{"probe caged-runtime:latest /srv/other", "read caged-runtime:latest /opt/caged/versions"}) {
 		t.Fatalf("calls = %q", calls)
 	}
-	if report.Results[6].Detail != "/srv/other can be mounted" {
-		t.Fatalf("project row = %+v", report.Results[6])
+	if report.Results[7].Detail != "/srv/other can be mounted" {
+		t.Fatalf("project row = %+v", report.Results[7])
 	}
 }

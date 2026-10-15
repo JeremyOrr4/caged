@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/JeremyOrr4/caged/internal/agent"
+	"github.com/JeremyOrr4/caged/internal/pathpolicy"
 	"github.com/JeremyOrr4/caged/internal/plan"
 	"github.com/JeremyOrr4/caged/internal/system"
 )
@@ -21,10 +22,50 @@ func (e fakeEnv) LookupEnv(key string) (string, bool) {
 	return value, ok
 }
 
+// policies is a fixed link policy for tests.
+type policies struct {
+	allow    []string
+	readOnly bool // the allow roots are read-only
+}
+
+func (p policies) LinkPolicy(home string) (*pathpolicy.Policy, error) {
+	resolved, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		resolved = home
+	}
+	cfg := pathpolicy.Config{Home: home, ResolvedHome: resolved, Source: "~/.config/caged/config.yaml", Field: "links.allow"}
+	for _, path := range p.allow {
+		forms := []string{path}
+		if r, err := filepath.EvalSymlinks(path); err == nil {
+			forms = append(forms, r)
+		}
+		cfg.Allow = append(cfg.Allow, pathpolicy.Root{Path: path, Forms: forms, ReadOnly: p.readOnly})
+	}
+	for _, path := range pathpolicy.BuiltinDeny(home) {
+		forms := []string{path}
+		if r, err := filepath.EvalSymlinks(path); err == nil {
+			forms = append(forms, r)
+		}
+		cfg.Deny = append(cfg.Deny, pathpolicy.Root{Path: path, Forms: forms, Builtin: true})
+	}
+	return pathpolicy.New(cfg)
+}
+
 // resolveConfigs runs the production resolver on the real filesystem with the
-// built-in agents and a controlled environment.
-func resolveConfigs(home string, env fakeEnv) plan.ConfigReport {
-	return NewResolver(system.FS{}, env, agent.Builtin().All(), DefaultSharedFiles()).Resolve(home)
+// built-in agents, a controlled environment, and no allowed link roots.
+func resolveConfigs(t *testing.T, home string, env fakeEnv) plan.ConfigReport {
+	t.Helper()
+	return resolveConfigsWith(t, home, env, policies{})
+}
+
+// resolveConfigsWith is resolveConfigs with the given link policy.
+func resolveConfigsWith(t *testing.T, home string, env fakeEnv, links policies) plan.ConfigReport {
+	t.Helper()
+	report, err := NewResolver(system.FS{}, env, agent.Builtin().All(), DefaultSharedFiles(), links).Resolve(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return report
 }
 
 func TestResolveAllConfigsMountsExistingConfigReadWrite(t *testing.T) {
@@ -54,7 +95,7 @@ func TestResolveAllConfigsMountsExistingConfigReadWrite(t *testing.T) {
 		}
 	}
 
-	report := resolveConfigs(home, nil)
+	report := resolveConfigs(t, home, nil)
 	defaultConfigs := report.Mounts
 	defaultNames := make(map[string]struct{}, len(defaultConfigs))
 	for _, mount := range defaultConfigs {
@@ -75,7 +116,7 @@ func TestResolveAllConfigsMountsExistingConfigReadWrite(t *testing.T) {
 	}
 
 	missingHome := t.TempDir()
-	if got := resolveConfigs(missingHome, nil).Mounts; len(got) != 0 {
+	if got := resolveConfigs(t, missingHome, nil).Mounts; len(got) != 0 {
 		t.Errorf("Resolve() with no local configs = %v, want none", got)
 	}
 }
@@ -86,7 +127,7 @@ func TestConfigOverrideCannotMountHomeDirectory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	report := resolveConfigs(home, fakeEnv{"CODEX_HOME": home})
+	report := resolveConfigs(t, home, fakeEnv{"CODEX_HOME": home})
 	for _, mount := range report.Mounts {
 		if filepath.Clean(mount.HostPath) == filepath.Clean(home) {
 			t.Fatal("agent config override mounted the entire home directory")
@@ -112,7 +153,7 @@ func TestConfigSymlinkOutsideHomeIsRefused(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(home, ".codex")); err != nil {
 		t.Fatal(err)
 	}
-	report := resolveConfigs(home, nil)
+	report := resolveConfigs(t, home, nil)
 	for _, mount := range report.Mounts {
 		if filepath.Clean(mount.HostPath) == filepath.Clean(outside) {
 			t.Fatalf("mounted config symlink target outside home: %+v", mount)
@@ -137,17 +178,33 @@ func TestConfigSymlinkOutsideConfigDirectoryIsRefused(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(privateDir, "secret"), []byte("no"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(privateDir, filepath.Join(configDir, "private-link")); err != nil {
+	if err := os.Symlink("../private", filepath.Join(configDir, "private-link")); err != nil {
 		t.Fatal(err)
 	}
-	report := resolveConfigs(home, nil)
+	report := resolveConfigs(t, home, nil)
+	resolvedConfigDir, err := filepath.EvalSymlinks(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedPrivateDir, err := filepath.EvalSymlinks(privateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mountedCodex := false
 	for _, mount := range report.Mounts {
-		if mount.Name == ".codex" {
-			t.Fatal("config tree with a symlink outside the config directory was mounted")
+		if mount.Name == ".codex" && mount.HostPath == resolvedConfigDir {
+			mountedCodex = true
+		}
+		if mount.HostPath == resolvedPrivateDir {
+			t.Fatalf("a symlink target outside the config directory and outside links.allow was mounted: %+v", mount)
 		}
 	}
-	if len(report.Refused) == 0 {
-		t.Fatalf("config directory escape was not reported as refused: %+v", report)
+	if !mountedCodex {
+		t.Fatalf("the config tree was not mounted whole next to the refused link: %+v", report)
+	}
+	link := filepath.Join(resolvedConfigDir, "private-link")
+	if len(report.Refused) != 1 || report.Refused[0].Path != link || !strings.Contains(report.Refused[0].Hint, "under links.allow") {
+		t.Fatalf("config directory escape was not refused with a hint: %+v", report.Refused)
 	}
 }
 
@@ -161,7 +218,7 @@ func TestSpecialFileInsideConfigTreeIsRefused(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(configDir, "agent.pipe"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	report := resolveConfigs(home, nil)
+	report := resolveConfigs(t, home, nil)
 	for _, mount := range report.Mounts {
 		if mount.Name == ".gemini" {
 			t.Fatal("config tree containing a socket was mounted")
@@ -195,7 +252,7 @@ func TestCodexHomeMountPreservesDirectoryAndMasksRuntimeEntries(t *testing.T) {
 	if err := os.Symlink("/opt/homebrew/bin/codex", filepath.Join(codexHome, "packages/app-server-daemon/current")); err != nil {
 		t.Fatal(err)
 	}
-	report := resolveConfigs(home, nil)
+	report := resolveConfigs(t, home, nil)
 	var codexMount *plan.ConfigMount
 	for _, mount := range report.Mounts {
 		if mount.Agent == "codex" {
@@ -228,7 +285,7 @@ func TestSharedGitConfigMustBeRegularFile(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(home, ".gitconfig"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	report := resolveConfigs(home, nil)
+	report := resolveConfigs(t, home, nil)
 	for _, mount := range report.Mounts {
 		if mount.Name == ".gitconfig" {
 			t.Fatal("directory mounted as shared git config")

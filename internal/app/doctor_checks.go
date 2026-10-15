@@ -26,10 +26,11 @@ func (d *Doctor) checks() []check {
 		{name: "docker", run: checkDocker},
 		{name: "daemon", needs: []string{"docker"}, run: d.checkDaemon},
 		{name: "image", needs: []string{"daemon"}, run: d.checkImage},
-		{name: "extension", run: checkExtension},
-		{name: "ext-image", needs: []string{"extension", "daemon", "image"}, run: d.checkExtensionImage},
+		{name: "config", run: d.checkConfig},
+		{name: "links", needs: []string{"config"}, run: d.checkLinks},
+		{name: "ext-image", needs: []string{"config", "daemon", "image"}, run: d.checkExtensionImage},
 		{name: "arch", needs: []string{"daemon"}, run: checkArch},
-		{name: "project", needs: []string{"daemon"}, run: d.checkProject},
+		{name: "project", needs: []string{"daemon", "config"}, run: d.checkProject},
 		{name: "versions", needs: []string{"daemon"}, run: checkVersions},
 	}
 }
@@ -170,16 +171,60 @@ func (d *Doctor) checkImage(ctx context.Context, f *facts) Result {
 	}
 }
 
-func checkExtension(_ context.Context, f *facts) Result {
-	ext, err := f.extension()
-	switch {
-	case err != nil:
+func (d *Doctor) checkConfig(_ context.Context, f *facts) Result {
+	status, err := d.deps.Config.Status()
+	if err != nil {
 		return Result{Status: StatusFail, Detail: err.Error()}
-	case ext == nil:
-		return Result{Status: StatusPass, Detail: "no extension file"}
-	default:
-		return Result{Status: StatusPass, Detail: fmt.Sprintf("%s (apt: %s)", ext.Source, strings.Join(ext.Apt, ", "))}
 	}
+	if _, err := f.extension(); err != nil {
+		return Result{Status: StatusFail, Detail: err.Error()}
+	}
+	detail := "no config file (" + status.Source + ")"
+	if status.Found {
+		var parts []string
+		if len(status.Apt) > 0 {
+			parts = append(parts, "apt: "+strings.Join(status.Apt, ", "))
+		}
+		parts = append(parts, fmt.Sprintf("links.allow: %d", status.LinkAllow))
+		if status.Workdirs {
+			parts = append(parts, fmt.Sprintf("workdirs.allow: %d", status.WorkdirAllow))
+		}
+		detail = status.Source + " (" + strings.Join(parts, "; ") + ")"
+	}
+	if status.Legacy != "" {
+		return Result{Status: StatusWarn, Detail: detail + "; " + status.Legacy + " is no longer read: move its packages to image.apt in " + status.Source}
+	}
+	return Result{Status: StatusPass, Detail: detail}
+}
+
+func (d *Doctor) checkLinks(_ context.Context, _ *facts) Result {
+	home, err := d.deps.Env.UserHomeDir()
+	if err != nil {
+		return Result{Status: StatusFail, Detail: fmt.Sprintf("find home directory: %v", err)}
+	}
+	report, err := d.deps.Configs.Resolve(home)
+	if err != nil {
+		return Result{Status: StatusFail, Detail: err.Error()}
+	}
+	var refused []string
+	for _, refusal := range report.Refused {
+		if refusal.Hint != "" {
+			refused = append(refused, refusal.String())
+		}
+	}
+	if len(refused) > 0 {
+		return Result{Status: StatusWarn, Detail: strings.Join(refused, "; ")}
+	}
+	followed := 0
+	for _, mount := range report.Mounts {
+		if mount.Link != "" {
+			followed++
+		}
+	}
+	if followed == 0 {
+		return Result{Status: StatusPass, Detail: "no symlinked config"}
+	}
+	return Result{Status: StatusPass, Detail: fmt.Sprintf("%d symlinked config mounts allowed", followed)}
 }
 
 func (d *Doctor) checkExtensionImage(ctx context.Context, f *facts) Result {
@@ -190,7 +235,7 @@ func (d *Doctor) checkExtensionImage(ctx context.Context, f *facts) Result {
 	}
 	if ext == nil {
 		if built.found {
-			return Result{Status: StatusWarn, Detail: images.ExtensionRef + " is no longer used (there is no extension file); caged clean removes it"}
+			return Result{Status: StatusWarn, Detail: images.ExtensionRef + " is no longer used (config.yaml lists no image.apt packages); caged clean removes it"}
 		}
 		return Result{Status: StatusPass, Detail: "not used"}
 	}

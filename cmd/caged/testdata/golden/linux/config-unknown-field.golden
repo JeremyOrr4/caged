@@ -1,0 +1,8 @@
+args: ["--no-mount"]
+exit code: 1
+error: ~/.config/caged/config.yaml: line 1: unknown field "imgae"
+leftover temp entries: 0
+=== stdout
+=== stderr
+~/.config/caged/config.yaml: line 1: unknown field "imgae"
+=== docker invocations

@@ -13,14 +13,14 @@ config: pass $ROOT/home/.codex -> /home/caged/.codex
 config: pass $ROOT/home/.copilot -> /home/caged/.copilot
 config: pass $ROOT/home/.gemini/oauth_creds.json -> /home/caged/.gemini/oauth_creds.json
 config: pass $ROOT/home/.gemini/settings.json -> /home/caged/.gemini/settings.json
+config: pass $ROOT/home/.gemini/settings.json -> /home/caged/.gemini/current-settings.json (via link $ROOT/home/.gemini/current-settings.json)
 config: pass $ROOT/home/.config/gh -> /home/caged/.config/gh
 config: pass $ROOT/home/.pi -> /home/caged/.pi
 config: pass $ROOT/home/.gitconfig -> /home/caged/.gitconfig
-config: refused $ROOT/home/.gemini/current-settings.json (symlinks and special files are excluded from config mounts)
-config: refused $ROOT/home/.config/pi (resolves outside home)
+config: refused $ROOT/home/.config/pi (symlink target $ROOT/outside/pi is not under links.allow); add "- path: $ROOT/outside/pi" under links.allow in ~/.config/caged/config.yaml
 env: pass ANTHROPIC_API_KEY
 command: ["claude"]
-image: no extension (~/.config/caged/image.json not found)
+image: no image.apt packages in ~/.config/caged/config.yaml
 image: caged-runtime:latest is current (runtime $RUNTIME_HASH12)
 === docker invocations
 info
@@ -62,6 +62,8 @@ $ROOT/home/.copilot:/home/caged/.copilot
 $ROOT/home/.gemini/oauth_creds.json:/home/caged/.gemini/oauth_creds.json
 -v
 $ROOT/home/.gemini/settings.json:/home/caged/.gemini/settings.json
+-v
+$ROOT/home/.gemini/settings.json:/home/caged/.gemini/current-settings.json
 -v
 $ROOT/home/.config/gh:/home/caged/.config/gh
 -v

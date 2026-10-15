@@ -140,6 +140,16 @@ func formatForSearch(statuses []AgentStatus) string {
 	return b.String()
 }
 
+func TestListerReturnsTheConfigResolverError(t *testing.T) {
+	t.Parallel()
+
+	resolveErr := errors.New("~/.config/caged/config.yaml: invalid YAML: line 1: did not find expected node content")
+	_, err := NewLister(&fakeEnv{home: "/Users/me"}, &fakeConfigs{err: resolveErr}, listerAgents()).List()
+	if !errors.Is(err, resolveErr) {
+		t.Fatalf("List() error = %v, want %v", err, resolveErr)
+	}
+}
+
 func TestListerNeedsAHomeDirectory(t *testing.T) {
 	t.Parallel()
 

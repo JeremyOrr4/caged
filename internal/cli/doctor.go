@@ -13,9 +13,10 @@ func newDoctorCmd(service DoctorService) *cobra.Command {
 		Use:   "doctor",
 		Short: "Check Docker, the images, and the project directory",
 		Long: "Check that Docker is installed and running, that the runtime image is current, that the\n" +
-			"image extension file is valid, that the image matches Docker's architecture, that the\n" +
-			"project directory can be mounted, and which CLI versions the image contains. Exits 1 when a\n" +
-			"check fails. It never builds, pulls, or removes anything, and never prints an environment value.",
+			"config file is valid (config), that symlinked agent config is allowed (links), that the image\n" +
+			"matches Docker's architecture, that the project directory can be mounted, and which CLI\n" +
+			"versions the image contains. Exits 1 when a check fails. It never builds, pulls, or removes\n" +
+			"anything, and never prints an environment value.",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
