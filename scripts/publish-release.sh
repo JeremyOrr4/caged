@@ -21,7 +21,14 @@ if ! git merge-base --is-ancestor "$tag" origin/main; then
   exit 1
 fi
 
-release_json="$(GH_TOKEN="$token" gh api "repos/$repo/releases/tags/$tag" 2>/dev/null || true)"
+get_release() {
+  GH_TOKEN="$token" gh api --paginate --slurp "repos/$repo/releases?per_page=100" \
+    | jq -c --arg tag "$tag" '[.[][] | select(.tag_name == $tag)] | first // empty'
+}
+
+# GitHub's release-by-tag endpoint omits draft releases. List releases instead
+# so interrupted GoReleaser drafts can be resumed.
+release_json="$(get_release)"
 draft=""
 if [ -n "$release_json" ]; then
   draft="$(jq -r '.draft' <<<"$release_json")"
@@ -40,9 +47,9 @@ if [ "$draft" != false ]; then
   (cd "$release_checkout" && GITHUB_TOKEN="$token" goreleaser release --clean)
 fi
 
-release_json="$(GH_TOKEN="$token" gh api "repos/$repo/releases/tags/$tag")"
-release_id="$(jq -r '.id' <<<"$release_json")"
-if [ "$release_id" = null ]; then
+release_json="$(get_release)"
+release_id="$(jq -r '.id // empty' <<<"$release_json")"
+if [ -z "$release_id" ]; then
   echo "GoReleaser did not create a release for $tag" >&2
   exit 1
 fi
