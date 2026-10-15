@@ -68,6 +68,31 @@ func resolveConfigsWith(t *testing.T, home string, env fakeEnv, links policies) 
 	return report
 }
 
+func TestResolveOutsideConfigThroughAliasedParentIsNotTreatedAsLink(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outside, "copilot"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "outside")
+	if err := os.Symlink(outside, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	report := resolveConfigs(t, home, fakeEnv{"COPILOT_HOME": filepath.Join(alias, "copilot")})
+	for _, refusal := range report.Refused {
+		if refusal.Path == filepath.Join(alias, "copilot") {
+			if refusal.Reason != "resolves outside home" {
+				t.Fatalf("refusal = %+v; want direct outside-home refusal", refusal)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing refusal for %s: %+v", filepath.Join(alias, "copilot"), report.Refused)
+}
+
 func TestResolveAllConfigsMountsExistingConfigReadWrite(t *testing.T) {
 	t.Parallel()
 

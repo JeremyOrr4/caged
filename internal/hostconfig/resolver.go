@@ -231,6 +231,10 @@ func (r *resolution) linked(hostPath, resolved string) bool {
 		if rel, err := filepath.Rel(r.home, hostPath); err == nil {
 			expected = filepath.Join(r.resolvedHome, rel)
 		}
+	} else if parent, err := r.fs.EvalSymlinks(filepath.Dir(hostPath)); err == nil {
+		// Canonicalize the parent so platform aliases such as macOS's /var ->
+		// /private/var are not mistaken for a symlink at the config path.
+		expected = filepath.Join(parent, filepath.Base(hostPath))
 	}
 	return filepath.Clean(resolved) != expected
 }
