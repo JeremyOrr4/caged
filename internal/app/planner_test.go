@@ -46,11 +46,12 @@ func (f *fakeProject) Resolve(workDir, home string, allowBroadMount bool) (*plan
 type fakeConfigs struct {
 	report  plan.ConfigReport
 	gotHome string
+	err     error
 }
 
-func (f *fakeConfigs) Resolve(home string) plan.ConfigReport {
+func (f *fakeConfigs) Resolve(home string) (plan.ConfigReport, error) {
 	f.gotHome = home
-	return f.report
+	return f.report, f.err
 }
 
 func lookup(t *testing.T, name string) *agent.Agent {
@@ -105,6 +106,42 @@ command: ["claude" "hello"]
 `
 	if stderr.String() != wantLog {
 		t.Fatalf("stderr = %q, want %q", stderr.String(), wantLog)
+	}
+}
+
+func TestPlannerReturnsTheConfigResolverError(t *testing.T) {
+	t.Parallel()
+
+	resolveErr := errors.New("~/.config/caged/config.yaml: line 1: unknown field \"imgae\"")
+	env := &fakeEnv{home: "/Users/dev", wd: "/Users/dev/app"}
+	_, err := NewPlanner(env, &fakeProject{}, &fakeConfigs{err: resolveErr}).Plan(Request{}, "img", NewReporter(io.Discard, false))
+	if !errors.Is(err, resolveErr) {
+		t.Fatalf("Plan() error = %v, want %v", err, resolveErr)
+	}
+}
+
+func TestPlannerLogsFollowedLinksAndRefusalHints(t *testing.T) {
+	t.Parallel()
+
+	env := &fakeEnv{home: "/Users/dev", wd: "/Users/dev/app"}
+	configs := &fakeConfigs{report: plan.ConfigReport{
+		Mounts: []plan.ConfigMount{{Agent: "claude", Name: ".claude", HostPath: "/Users/dev/dot/CLAUDE.md", DestPath: "/home/caged/.claude/CLAUDE.md", Link: "/Users/dev/.claude/CLAUDE.md"}},
+		Refused: []plan.Refusal{{
+			Path: "/Users/dev/.claude/agents", Reason: "symlink target ~/dot2/agents is not under links.allow",
+			Hint: `add "- path: ~/dot2/agents" under links.allow in ~/.config/caged/config.yaml`,
+		}},
+	}}
+	var stderr strings.Builder
+	if _, err := NewPlanner(env, &fakeProject{}, configs).Plan(Request{NoMount: true}, "img", NewReporter(&stderr, true)); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"config: pass /Users/dev/dot/CLAUDE.md -> /home/caged/.claude/CLAUDE.md (via link /Users/dev/.claude/CLAUDE.md)\n",
+		"config: refused /Users/dev/.claude/agents (symlink target ~/dot2/agents is not under links.allow); add \"- path: ~/dot2/agents\" under links.allow in ~/.config/caged/config.yaml\n",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr = %q, want it to contain %q", stderr.String(), want)
+		}
 	}
 }
 

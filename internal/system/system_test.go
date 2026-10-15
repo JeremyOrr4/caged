@@ -44,6 +44,9 @@ func TestFSUsesTheRealFilesystem(t *testing.T) {
 	if got, err := fsys.EvalSymlinks(link); err != nil || got != resolvedFile {
 		t.Fatalf("EvalSymlinks(link) = %q, %v; want %q", got, err, resolvedFile)
 	}
+	if got, err := fsys.Readlink(link); err != nil || got != file {
+		t.Fatalf("Readlink(link) = %q, %v; want %q", got, err, file)
+	}
 	if got, err := fsys.Abs(file); err != nil || got != file {
 		t.Fatalf("Abs(%q) = %q, %v", file, got, err)
 	}

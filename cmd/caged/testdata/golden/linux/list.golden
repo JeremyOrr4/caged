@@ -7,7 +7,7 @@ AGENT    CONFIG               AUTH ENV SET
 claude   ~/.claude            -
 codex    ~/.codex             -
 copilot  ~/.copilot           -
-gemini   ~/.gemini (2 files)  -
+gemini   ~/.gemini (3 files)  -
 gh       ~/.config/gh         -
 pi       ~/.pi                -
 === stderr

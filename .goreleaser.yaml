@@ -26,12 +26,34 @@ archives:
 checksum:
   name_template: checksums.txt
 
-# The release notes are the CHANGELOG section of the version; the release
-# workflow extracts it and passes it with --release-notes.
 changelog:
-  disable: true
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^Merge '
+      - '^docs:'
+      - '^chore:'
+      - '^ci:'
+      - '^test:'
+      - '^build:'
+      - '^refactor:'
+      - '^style:'
+      - '^revert:'
+  groups:
+    - title: Features
+      regexp: '^feat(\([^)]+\))?!?:'
+      order: 0
+    - title: Bug fixes
+      regexp: '^fix(\([^)]+\))?!?:'
+      order: 1
+    - title: Performance improvements
+      regexp: '^perf(\([^)]+\))?!?:'
+      order: 2
+    - title: Other changes
+      order: 999
 
 release:
-  # A tag with a -rc suffix is a prerelease: it is on GitHub but is not "latest",
-  # and the Homebrew formula never points at it.
-  prerelease: auto
+  draft: true
+  replace_existing_draft: true
+  mode: replace

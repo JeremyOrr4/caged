@@ -84,6 +84,8 @@ type DoctorDeps struct {
 	Store      ImageInspector
 	Prober     Prober
 	Extensions Extensions
+	Config     ConfigFile
+	Configs    ConfigResolver
 	Project    ProjectResolver
 	Env        Env
 	Host       Host

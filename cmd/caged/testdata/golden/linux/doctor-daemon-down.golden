@@ -7,7 +7,8 @@ caged test (linux/amd64)
 PASS  docker     installed
 FAIL  daemon     Docker is installed but the daemon is unavailable; start the Docker daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?
 SKIP  image      needs daemon
-PASS  extension  no extension file
+PASS  config     no config file (~/.config/caged/config.yaml)
+WARN  links      $ROOT/home/.config/pi (symlink target $ROOT/outside/pi is not under links.allow); add "- path: $ROOT/outside/pi" under links.allow in ~/.config/caged/config.yaml
 SKIP  ext-image  needs daemon
 SKIP  arch       needs daemon
 SKIP  project    needs daemon

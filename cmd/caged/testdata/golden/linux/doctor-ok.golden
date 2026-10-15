@@ -7,7 +7,8 @@ caged test (linux/amd64)
 PASS  docker     $ROOT/bin/docker
 PASS  daemon     Docker Desktop, engine 27.0.0, linux/amd64
 PASS  image      caged-runtime:latest is current (runtime $RUNTIME_HASH12, built by caged test)
-PASS  extension  no extension file
+PASS  config     no config file (~/.config/caged/config.yaml)
+WARN  links      $ROOT/home/.config/pi (symlink target $ROOT/outside/pi is not under links.allow); add "- path: $ROOT/outside/pi" under links.allow in ~/.config/caged/config.yaml
 PASS  ext-image  not used
 PASS  arch       image linux/amd64 matches the Docker VM (amd64)
 PASS  project    $ROOT/work/project can be mounted

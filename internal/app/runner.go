@@ -29,7 +29,7 @@ func NewRunner(exts Extensions, planner RunPlanner, daemon Daemon, ensurer *Imag
 
 // Run reads the image extension, plans the container, checks the engine,
 // builds the images if they are missing or out of date, and runs the
-// container. The extension file and the plan come first, so a bad file or a
+// container. The config file and the plan come first, so a bad file or a
 // bad request fails before any docker call.
 func (r *Runner) Run(ctx context.Context, req Request) error {
 	rep := NewReporter(r.stderr, req.Verbose)
@@ -46,7 +46,7 @@ func (r *Runner) Run(ctx context.Context, req Request) error {
 	}
 	if ext == nil {
 		if source, err := r.exts.Source(); err == nil {
-			rep.Detail("image: no extension (%s not found)", source)
+			rep.Detail("image: no image.apt packages in %s", source)
 		}
 	}
 	if _, err := r.ensurer.Ensure(ctx, ext, rep); err != nil {

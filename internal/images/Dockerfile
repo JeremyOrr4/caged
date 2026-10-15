@@ -74,9 +74,9 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -d /home/caged -s /bin/bash caged \
-    && mkdir -p /workspace /home/caged/.config/pi /home/caged/.config/gh /home/caged/.pi /home/caged/.claude \
+    && mkdir -p /workspace /home/caged/.config/pi /home/caged/.config/gh /home/caged/.pi /home/caged/.pi/agent /home/caged/.claude \
         /home/caged/.codex /home/caged/.gemini /home/caged/.copilot /home/caged/.cache \
-    && chmod 0777 /home/caged /home/caged/.config /home/caged/.config/pi /home/caged/.config/gh /home/caged/.pi \
+    && chmod 0777 /home/caged /home/caged/.config /home/caged/.config/pi /home/caged/.config/gh /home/caged/.pi /home/caged/.pi/agent \
         /home/caged/.claude /home/caged/.codex /home/caged/.gemini /home/caged/.copilot \
     && chown caged:caged /home/caged/.cache \
     && git config --system --add safe.directory '/workspace/*' \

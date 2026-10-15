@@ -1,0 +1,44 @@
+args: ["doctor"]
+exit code: 0
+error: <nil>
+leftover temp entries: 0
+=== stdout
+caged test (linux/amd64)
+PASS  docker     $ROOT/bin/docker
+PASS  daemon     Docker Desktop, engine 27.0.0, linux/amd64
+PASS  image      caged-runtime:latest is current (runtime $RUNTIME_HASH12, built by caged test)
+WARN  config     no config file (~/.config/caged/config.yaml); ~/.config/caged/image.json is no longer read: move its packages to image.apt in ~/.config/caged/config.yaml
+WARN  links      $ROOT/home/.config/pi (symlink target $ROOT/outside/pi is not under links.allow); add "- path: $ROOT/outside/pi" under links.allow in ~/.config/caged/config.yaml
+PASS  ext-image  not used
+PASS  arch       image linux/amd64 matches the Docker VM (amd64)
+PASS  project    $ROOT/work/project can be mounted
+PASS  versions   claude 2.1.3, codex 0.46.0, copilot 0.0.330, gemini 0.9.0, gh 2.81.0, pi 0.12.0
+=== stderr
+=== docker invocations
+info
+--format
+{{.ServerVersion}}|{{.OperatingSystem}}|{{.Architecture}}
+---
+image
+inspect
+caged-runtime:latest
+---
+image
+inspect
+caged-runtime:ext
+---
+run
+--rm
+-v
+$ROOT/work/project:/workspace/project:ro
+--entrypoint
+true
+caged-runtime:latest
+---
+run
+--rm
+--entrypoint
+cat
+caged-runtime:latest
+/opt/caged/versions
+---

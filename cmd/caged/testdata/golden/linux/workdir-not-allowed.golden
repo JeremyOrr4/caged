@@ -1,0 +1,9 @@
+args: ["claude"]
+exit code: 1
+error: refusing to mount $ROOT/work/project: it is not under workdirs.allow; add "- path: $ROOT/work/project" under workdirs.allow in ~/.config/caged/config.yaml
+leftover temp entries: 0
+=== stdout
+=== stderr
+WARNING: allowlisted agent credentials are available inside the container.
+refusing to mount $ROOT/work/project: it is not under workdirs.allow; add "- path: $ROOT/work/project" under workdirs.allow in ~/.config/caged/config.yaml
+=== docker invocations

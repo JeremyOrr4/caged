@@ -1,0 +1,8 @@
+args: ["--no-mount"]
+exit code: 1
+error: ~/.config/caged/config.yaml: links.allow entry has no path (a bare ~ is YAML null; quote it as "~")
+leftover temp entries: 0
+=== stdout
+=== stderr
+~/.config/caged/config.yaml: links.allow entry has no path (a bare ~ is YAML null; quote it as "~")
+=== docker invocations

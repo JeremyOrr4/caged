@@ -1,0 +1,34 @@
+name: tap formula CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  formula:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - name: Tap local checkout
+        run: brew tap jeremyorr4/tap "$GITHUB_WORKSPACE"
+      - name: Audit and style
+        run: |
+          brew audit --strict --online jeremyorr4/tap/caged
+          brew style --formula caged
+      - name: Build and test from source
+        run: |
+          brew install --build-from-source jeremyorr4/tap/caged
+          brew test caged

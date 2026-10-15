@@ -94,6 +94,14 @@ func (f *fakeExts) Load() (*plan.Extension, error) {
 
 func (f *fakeExts) Source() (string, error) { return f.source, f.sourceErr }
 
+// fakeConfigFile is a ConfigFile with a fixed answer.
+type fakeConfigFile struct {
+	status plan.ConfigStatus
+	err    error
+}
+
+func (f *fakeConfigFile) Status() (plan.ConfigStatus, error) { return f.status, f.err }
+
 // fakeRunner is a ContainerRunner that records the spec it was given.
 type fakeRunner struct {
 	calls  *[]string

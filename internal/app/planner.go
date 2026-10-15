@@ -23,7 +23,7 @@ type ProjectResolver interface {
 // ConfigResolver finds the host config that can be mounted.
 // hostconfig.Resolver implements it.
 type ConfigResolver interface {
-	Resolve(home string) plan.ConfigReport
+	Resolve(home string) (plan.ConfigReport, error)
 }
 
 // Planner turns a Request into a complete plan.RunSpec.
@@ -128,7 +128,10 @@ func (p *Planner) configMounts(request Request, home *homeLookup, rep *Reporter)
 	if err != nil {
 		return nil, err
 	}
-	report := p.configs.Resolve(homeDir)
+	report, err := p.configs.Resolve(homeDir)
+	if err != nil {
+		return nil, err
+	}
 	logConfigReport(rep, report)
 	return report.Mounts, nil
 }
@@ -140,7 +143,11 @@ func (p *Planner) isSet(name string) bool {
 
 func logConfigReport(rep *Reporter, report plan.ConfigReport) {
 	for _, mount := range report.Mounts {
-		rep.Detail("config: pass %s -> %s", mount.HostPath, mount.DestPath)
+		if mount.Link != "" {
+			rep.Detail("config: pass %s -> %s (via link %s)", mount.HostPath, mount.DestPath, mount.Link)
+		} else {
+			rep.Detail("config: pass %s -> %s", mount.HostPath, mount.DestPath)
+		}
 	}
 	for _, path := range report.Missing {
 		rep.Detail("config: missing %s", path)

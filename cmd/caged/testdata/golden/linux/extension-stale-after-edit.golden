@@ -6,7 +6,7 @@ leftover temp entries: 0
 fake docker build output
 fake docker run output
 === stderr
-Building image extension from ~/.config/caged/image.json (apt: neovim, shellcheck, tmux)...
+Building image extension from ~/.config/caged/config.yaml (apt: neovim, shellcheck, tmux)...
 === docker invocations
 info
 --format

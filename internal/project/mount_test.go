@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JeremyOrr4/caged/internal/pathpolicy"
 	"github.com/JeremyOrr4/caged/internal/system"
 )
 
@@ -62,7 +63,7 @@ func TestResolveProjectMount(t *testing.T) {
 	if err := os.WriteFile(file, []byte("test"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	resolver := NewResolver(system.FS{})
+	resolver := NewResolver(system.FS{}, nil)
 
 	mount, err := resolver.Resolve(projectPath, home, false)
 	if err != nil {
@@ -145,7 +146,7 @@ func TestResolverResolvesRelativePathsAndMacOSSymlinks(t *testing.T) {
 		entries:  map[string]bool{"/tmp/app": true},
 		resolved: map[string]string{"/tmp/app": "/private/tmp/app", "/Users/dev": "/Users/dev"},
 	}
-	mount, err := NewResolver(fsys).Resolve("app", "/Users/dev", false)
+	mount, err := NewResolver(fsys, nil).Resolve("app", "/Users/dev", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +162,7 @@ func TestResolverComparesHomeAfterResolvingSymlinks(t *testing.T) {
 		entries:  map[string]bool{"/home/dev": true},
 		resolved: map[string]string{"/home/dev": "/data/home/dev"},
 	}
-	if _, err := NewResolver(fsys).Resolve("/home/dev", "/home/dev", false); err == nil || !strings.Contains(err.Error(), "entire home directory") {
+	if _, err := NewResolver(fsys, nil).Resolve("/home/dev", "/home/dev", false); err == nil || !strings.Contains(err.Error(), "entire home directory") {
 		t.Fatalf("Resolve(home) error = %v, want broad-mount rejection", err)
 	}
 }
@@ -187,9 +188,105 @@ func TestResolverErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := NewResolver(tt.fsys).Resolve("/work/app", "/Users/dev", false); err == nil || err.Error() != tt.want {
+			if _, err := NewResolver(tt.fsys, nil).Resolve("/work/app", "/Users/dev", false); err == nil || err.Error() != tt.want {
 				t.Fatalf("Resolve() error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// fakePolicies returns a fixed workdir policy and records the home it was asked about.
+type fakePolicies struct {
+	policy  *pathpolicy.Policy
+	err     error
+	gotHome string
+}
+
+func (f *fakePolicies) WorkdirPolicy(home string) (*pathpolicy.Policy, error) {
+	f.gotHome = home
+	return f.policy, f.err
+}
+
+func workdirPolicy(t *testing.T, home string, allow ...string) *pathpolicy.Policy {
+	t.Helper()
+	cfg := pathpolicy.Config{Home: home, Source: "~/.config/caged/config.yaml", Field: "workdirs.allow"}
+	for _, path := range allow {
+		cfg.Allow = append(cfg.Allow, pathpolicy.Root{Path: path})
+	}
+	policy, err := pathpolicy.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return policy
+}
+
+func TestResolverAppliesTheWorkdirPolicy(t *testing.T) {
+	t.Parallel()
+
+	fsys := fakeFS{
+		entries: map[string]bool{"/Users/dev/git/app": true, "/Users/dev/other/app": true},
+		resolved: map[string]string{
+			"/Users/dev/git/app":   "/Users/dev/git/app",
+			"/Users/dev/other/app": "/Users/dev/other/app",
+			"/Users/dev":           "/Users/dev",
+		},
+	}
+	policy := workdirPolicy(t, "/Users/dev", "/Users/dev/git")
+
+	t.Run("a directory under workdirs.allow is mounted", func(t *testing.T) {
+		t.Parallel()
+		policies := &fakePolicies{policy: policy}
+		mount, err := NewResolver(fsys, policies).Resolve("/Users/dev/git/app", "/Users/dev", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mount.HostPath != "/Users/dev/git/app" || policies.gotHome != "/Users/dev" {
+			t.Fatalf("Resolve() = %+v for home %q", mount, policies.gotHome)
+		}
+	})
+	t.Run("a directory outside workdirs.allow is refused with a hint", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewResolver(fsys, &fakePolicies{policy: policy}).Resolve("/Users/dev/other/app", "/Users/dev", false)
+		want := `refusing to mount /Users/dev/other/app: it is not under workdirs.allow; add "- path: ~/other/app" under workdirs.allow in ~/.config/caged/config.yaml`
+		if err == nil || err.Error() != want {
+			t.Fatalf("Resolve() error = %v, want %q", err, want)
+		}
+	})
+	t.Run("--allow-broad-mount does not bypass it", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewResolver(fsys, &fakePolicies{policy: policy}).Resolve("/Users/dev/other/app", "/Users/dev", true)
+		if err == nil || !strings.Contains(err.Error(), "workdirs.allow") {
+			t.Fatalf("Resolve() error = %v, want a workdirs.allow refusal", err)
+		}
+	})
+	t.Run("no policy allows every directory", func(t *testing.T) {
+		t.Parallel()
+		if _, err := NewResolver(fsys, &fakePolicies{}).Resolve("/Users/dev/other/app", "/Users/dev", false); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("a policy error is passed through", func(t *testing.T) {
+		t.Parallel()
+		policyErr := errors.New("~/.config/caged/config.yaml: invalid YAML: line 1")
+		_, err := NewResolver(fsys, &fakePolicies{err: policyErr}).Resolve("/Users/dev/git/app", "/Users/dev", false)
+		if !errors.Is(err, policyErr) {
+			t.Fatalf("Resolve() error = %v, want %v", err, policyErr)
+		}
+	})
+}
+
+func TestResolverAsksThePolicyAboutTheHomeAsGiven(t *testing.T) {
+	t.Parallel()
+
+	fsys := fakeFS{
+		entries:  map[string]bool{"/home/dev/app": true},
+		resolved: map[string]string{"/home/dev/app": "/data/home/dev/app", "/home/dev": "/data/home/dev"},
+	}
+	policies := &fakePolicies{policy: workdirPolicy(t, "/home/dev", "/data/home/dev")}
+	if _, err := NewResolver(fsys, policies).Resolve("/home/dev/app", "/home/dev", false); err != nil {
+		t.Fatal(err)
+	}
+	if policies.gotHome != "/home/dev" {
+		t.Fatalf("policy was asked about home %q, want the home as given, /home/dev", policies.gotHome)
 	}
 }

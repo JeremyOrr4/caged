@@ -71,13 +71,13 @@ func staleBase() fakeImage {
 	}}
 }
 
-// goldenExtensionFile is the path of the user's image.json under $ROOT.
-const goldenExtensionFile = "home/.config/caged/image.json"
+// goldenExtensionFile is the path of the user's config.yaml under $ROOT.
+const goldenExtensionFile = "home/.config/caged/config.yaml"
 
 // currentExtension is the extension image that the golden version would build
 // from the packages in apt, on the base image with ID baseID.
 func currentExtension(apt []string, baseID string) fakeImage {
-	target := images.Extension(plan.Extension{Source: "~/.config/caged/image.json", Apt: apt}, baseID, goldenVersion)
+	target := images.Extension(plan.Extension{Source: "~/.config/caged/config.yaml", Apt: apt}, baseID, goldenVersion)
 	labels := map[string]string{images.LabelVersion: goldenVersion}
 	for _, label := range target.Identity {
 		labels[label.Key] = label.Value
@@ -129,8 +129,11 @@ type goldenCase struct {
 	env map[string]string
 	// noDocker hides the fake docker binary from PATH.
 	noDocker bool
-	// files are extra fixture files under $ROOT, by relative path.
+	// files are extra fixture files under $ROOT, by relative path. "$ROOT" in
+	// the contents is replaced with the scenario root.
 	files map[string]string
+	// links are extra symlinks under $ROOT (link -> target); an existing entry at the link is removed first. "$ROOT" in a target is replaced.
+	links map[string]string
 	// images are the local images; nil means defaultImages.
 	images map[string]fakeImage
 	// fail makes docker verbs fail, by verb name (see the fake docker header).
@@ -212,36 +215,101 @@ func goldenCases() []goldenCase {
 		{
 			name:  "extension-first-build",
 			args:  []string{"claude"},
-			files: map[string]string{goldenExtensionFile: `{"apt": ["tmux", "neovim", "tmux"]}`},
+			files: map[string]string{goldenExtensionFile: "image:\n  apt: [tmux, neovim, tmux]\n"},
 		},
 		{
 			name:   "extension-current",
 			args:   []string{"--verbose", "--no-config", "claude"},
-			files:  map[string]string{goldenExtensionFile: `{"apt": ["neovim", "tmux"]}`},
+			files:  map[string]string{goldenExtensionFile: "image:\n  apt: [neovim, tmux]\n"},
 			images: map[string]fakeImage{images.BaseRef: currentBase(), images.ExtensionRef: currentExtension([]string{"neovim", "tmux"}, "sha256:fake-base")},
 		},
 		{
 			name:  "extension-xdg-config-home",
 			args:  []string{"--no-config", "claude"},
 			env:   map[string]string{"XDG_CONFIG_HOME": "$ROOT/xdg"},
-			files: map[string]string{"xdg/caged/image.json": `{"apt": ["tmux"]}`},
+			files: map[string]string{"xdg/caged/config.yaml": "image:\n  apt: [tmux]\n"},
 		},
 		{
 			name:   "extension-stale-after-edit",
 			args:   []string{"--no-config", "claude"},
-			files:  map[string]string{goldenExtensionFile: `{"apt": ["neovim", "tmux", "shellcheck"]}`},
+			files:  map[string]string{goldenExtensionFile: "image:\n  apt: [neovim, tmux, shellcheck]\n"},
 			images: map[string]fakeImage{images.BaseRef: currentBase(), images.ExtensionRef: staleExtension("sha256:fake-base")},
 		},
 		{
 			name:  "extension-invalid",
 			args:  []string{"claude"},
-			files: map[string]string{goldenExtensionFile: `{"apt": ["vim; curl x"]}`},
+			files: map[string]string{goldenExtensionFile: "image:\n  apt: [\"vim; curl x\"]\n"},
 		},
 		{
 			name:  "build-with-extension",
 			args:  []string{"build"},
-			files: map[string]string{goldenExtensionFile: `{"apt": ["neovim", "tmux"]}`},
+			files: map[string]string{goldenExtensionFile: "image:\n  apt: [neovim, tmux]\n"},
 		},
+		{
+			name:  "links-refused-hint",
+			args:  []string{"--verbose", "claude"},
+			files: map[string]string{"home/dotfiles/claude/CLAUDE.md": "# rules\n"},
+			links: map[string]string{"home/.claude/CLAUDE.md": "../dotfiles/claude/CLAUDE.md"},
+		},
+		{
+			name: "links-allowed",
+			args: []string{"--verbose", "claude"},
+			files: map[string]string{
+				"home/dotfiles/claude/CLAUDE.md": "# rules\n",
+				goldenExtensionFile:              "links:\n  allow:\n    - path: ~/dotfiles\n",
+			},
+			links: map[string]string{"home/.claude/CLAUDE.md": "../dotfiles/claude/CLAUDE.md"},
+		},
+		{
+			name: "links-read-only",
+			args: []string{"--verbose", "claude"},
+			files: map[string]string{
+				"home/dotfiles/claude/CLAUDE.md": "# rules\n",
+				goldenExtensionFile:              "links:\n  allow:\n    - path: ~/dotfiles\n      read_only: true\n",
+			},
+			links: map[string]string{"home/.claude/CLAUDE.md": "../dotfiles/claude/CLAUDE.md"},
+		},
+		{
+			name: "links-denied-ssh",
+			args: []string{"--verbose", "claude"},
+			files: map[string]string{
+				"home/.ssh/id_test": "key\n",
+				goldenExtensionFile: "links:\n  allow:\n    - path: ~/dotfiles\n",
+			},
+			links: map[string]string{"home/.claude/key": "../.ssh/id_test"},
+		},
+		{
+			name: "links-root-allowed",
+			args: []string{"--verbose", "pi"},
+			files: map[string]string{
+				"home/dotfiles/pi/settings.json": "{}\n",
+				goldenExtensionFile:              "links:\n  allow:\n    - path: ~/dotfiles\n",
+			},
+			links: map[string]string{"home/.config/pi": "../dotfiles/pi"},
+		},
+		{
+			name: "links-codex-masked",
+			args: []string{"--verbose", "codex"},
+			files: map[string]string{
+				"home/dotfiles/codex/AGENTS.md": "# a\n",
+				goldenExtensionFile:             "links:\n  allow:\n    - path: ~/dotfiles\n",
+			},
+			links: map[string]string{"home/.codex/AGENTS.md": "../dotfiles/codex/AGENTS.md"},
+		},
+		{name: "config-invalid-yaml", args: []string{"--no-mount"}, files: map[string]string{goldenExtensionFile: "image: [\n"}},
+		{name: "config-unknown-field", args: []string{"--no-mount"}, files: map[string]string{goldenExtensionFile: "imgae:\n  apt: [jq]\n"}},
+		// "~" is quoted: an unquoted ~ is YAML null, which reads as an empty path.
+		{name: "config-allow-home", args: []string{"--verbose", "--no-mount", "claude"}, files: map[string]string{goldenExtensionFile: "links:\n  allow:\n    - path: \"~\"\n"}},
+		{name: "config-unquoted-tilde", args: []string{"--no-mount"}, files: map[string]string{goldenExtensionFile: "links:\n  allow:\n    - path: ~\n"}},
+		{name: "doctor-legacy-image-json", args: []string{"doctor"}, files: map[string]string{"home/.config/caged/image.json": `{"apt": ["jq"]}`}},
+		{
+			name:  "doctor-links-refused",
+			args:  []string{"doctor"},
+			files: map[string]string{"home/dotfiles/claude/CLAUDE.md": "# rules\n"},
+			links: map[string]string{"home/.claude/CLAUDE.md": "../dotfiles/claude/CLAUDE.md"},
+		},
+		{name: "workdir-not-allowed", args: []string{"claude"}, files: map[string]string{goldenExtensionFile: "workdirs:\n  allow:\n    - path: ~/elsewhere\n"}},
+		{name: "workdir-allowed", args: []string{"claude"}, files: map[string]string{goldenExtensionFile: "workdirs:\n  allow:\n    - path: $ROOT/work\n"}},
 		{name: "passthrough-prompt-claude", args: []string{"claude", goldenPrompt, "--", "--model", "opus", "--add-dir", "../lib", "$(id)", `"q"`}},
 		{name: "passthrough-gh", args: []string{"gh", "--", "pr", "list"}},
 		{name: "passthrough-no-agent", args: []string{"--", "--resume"}},
@@ -502,7 +570,19 @@ func writeFakeDockerState(t *testing.T, root string, tc goldenCase, platform sys
 		}
 	}
 	for name, contents := range tc.files {
-		write(filepath.Join(root, name), []byte(contents))
+		write(filepath.Join(root, name), []byte(strings.ReplaceAll(contents, "$ROOT", root)))
+	}
+	for link, target := range tc.links {
+		path := filepath.Join(root, link)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(strings.ReplaceAll(target, "$ROOT", root), path); err != nil {
+			t.Fatal(err)
+		}
 	}
 	state := filepath.Join(root, "docker-state")
 	images := tc.images

@@ -25,6 +25,7 @@ func TestRuntimeAgentHomeDirectoriesAreWritableByMappedUsers(t *testing.T) {
 	homePaths := []string{
 		"/home/caged/.config/pi",
 		"/home/caged/.pi",
+		"/home/caged/.pi/agent",
 		"/home/caged/.claude",
 		"/home/caged/.codex",
 		"/home/caged/.gemini",

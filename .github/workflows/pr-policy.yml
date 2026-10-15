@@ -34,7 +34,7 @@ jobs:
               echo "PRs into dev must not come from main; dev only accepts squash merges"
               exit 1
             fi
-            pattern='^(feat|fix|docs|test|refactor|perf|build|ci|chore)(\([a-z0-9-]+\))?!?: .+'
+            pattern='^(feat|fix|docs|test|refactor|perf|build|ci|chore|revert)(\([^)]+\))?!?: .+'
             if ! printf '%s\n' "$TITLE" | grep -Eq "$pattern"; then
               echo "PR title must follow Conventional Commits, for example: feat(ports): publish container ports with -p"
               exit 1

@@ -22,6 +22,7 @@ func (FS) Stat(name string) (fs.FileInfo, error)        { return os.Stat(name) }
 func (FS) Lstat(name string) (fs.FileInfo, error)       { return os.Lstat(name) }
 func (FS) ReadDir(name string) ([]fs.DirEntry, error)   { return os.ReadDir(name) }
 func (FS) EvalSymlinks(path string) (string, error)     { return filepath.EvalSymlinks(path) }
+func (FS) Readlink(name string) (string, error)         { return os.Readlink(name) }
 func (FS) WalkDir(root string, fn fs.WalkDirFunc) error { return filepath.WalkDir(root, fn) }
 func (FS) MkdirTemp(dir, pattern string) (string, error) {
 	return os.MkdirTemp(dir, pattern)

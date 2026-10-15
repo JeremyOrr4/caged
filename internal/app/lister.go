@@ -37,8 +37,12 @@ func (l *Lister) List() ([]AgentStatus, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find home directory: %w", err)
 	}
+	report, err := l.configs.Resolve(home)
+	if err != nil {
+		return nil, err
+	}
 	roots := map[string][]string{} // agent name -> mount roots, one entry per mount
-	for _, mount := range l.configs.Resolve(home).Mounts {
+	for _, mount := range report.Mounts {
 		if mount.Agent == plan.SharedOwner {
 			continue
 		}

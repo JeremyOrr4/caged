@@ -1,61 +1,239 @@
 name: release
 
-# Runs when a maintainer pushes a tag. Tags are created by hand (see
-# docs/releasing.md); a ruleset restricts who can create them.
-
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
+    inputs:
+      mode:
+        description: Release operation
+        required: false
+        type: string
+        default: auto
+      version:
+        description: Version override without a leading v
+        required: false
+        type: string
+        default: ''
+      tag:
+        description: Existing stable tag to recover
+        required: false
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Release operation
+        required: true
+        type: choice
+        options: [auto, dry-run, recover, version_override]
+        default: dry-run
+      version:
+        description: Version override without a leading v
+        required: false
+        type: string
+      tag:
+        description: Existing stable tag to recover (required for recover)
+        required: false
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
+    if: github.ref == 'refs/heads/main' && (inputs.mode == 'dry-run' || vars.RELEASES_PAUSED != 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
+    environment: release
     permissions:
-      contents: write # create the GitHub release and upload the archives
+      contents: write
+    env:
+      MODE: ${{ inputs.mode }}
+      VERSION_OVERRIDE: ${{ inputs.version }}
+      RECOVER_TAG: ${{ inputs.tag }}
+      RELEASES_PAUSED: ${{ vars.RELEASES_PAUSED }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Check the tag's commit is on the right branch
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          case "$TAG" in
-            *-rc.*) branch=origin/dev ;;
-            *) branch=origin/main ;;
-          esac
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" "$branch"; then
-            echo "tag $TAG is not reachable from $branch; release tags must be cut from main, and -rc tags from dev"
-            exit 1
-          fi
+          persist-credentials: false
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Install the check and release tools
+          cache: true
+
+      - name: Confirm release mode and pause switch
+        id: gate
+        run: |
+          if [ "$MODE" = "recover" ] && [ -z "$RECOVER_TAG" ]; then
+            echo "recover mode requires the tag input (for example v0.1.0)" >&2
+            exit 1
+          fi
+          if [ "$MODE" = "version_override" ] && [ -z "$VERSION_OVERRIDE" ]; then
+            echo "version_override mode requires the version input (for example 1.0.0)" >&2
+            exit 1
+          fi
+          if [ "$RELEASES_PAUSED" = true ] && [ "$MODE" != "dry-run" ]; then
+            echo "releases are paused by RELEASES_PAUSED=true" >&2
+            exit 1
+          fi
+          echo "continue=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned release tools
+        if: steps.gate.outputs.continue == 'true'
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
           go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           go install github.com/goreleaser/goreleaser/v2@v2.18.3
-      - name: Check
-        run: make check
-      - name: Extract the release notes from CHANGELOG.md
+
+      - name: Create GitHub App token
+        id: app-token
+        if: steps.gate.outputs.continue == 'true' && inputs.mode != 'dry-run'
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: JeremyOrr4
+          repositories: |
+            caged
+            homebrew-tap
+          permission-contents: write
+
+      - name: Check for an interrupted tag release
+        id: pending
+        if: inputs.mode == 'auto'
         env:
-          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          version="${TAG#v}"
-          awk -v v="$version" '
-            /^## \[/ { if (found) exit; found = index($0, "[" v "]") > 0; next }
-            found { print }
-          ' CHANGELOG.md > release-notes.md
-          if [ ! -s release-notes.md ]; then
-            echo "CHANGELOG.md has no section for $version"
+          tag="$(git tag --list 'v*' --merged HEAD --sort=-v:refname \
+            | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' | head -n1 || true)"
+          if [ -z "$tag" ]; then
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq '.draft' 2>/dev/null || true)"
+          if [ "$draft" != false ]; then
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resume interrupted stable release
+        if: steps.pending.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/publish-release.sh "${{ steps.pending.outputs.tag }}"
+
+      - name: Select version
+        id: version
+        if: inputs.mode == 'auto' || inputs.mode == 'dry-run' || inputs.mode == 'version_override'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$MODE" = "version_override" ]; then
+            version="$VERSION_OVERRIDE"
+            python3 - "$version" <<'PY'
+          import re, sys
+          if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", sys.argv[1]):
+              raise SystemExit("version override must be stable SemVer without a leading v")
+          PY
+            last_tag="$(git tag --list 'v*' --merged HEAD --sort=-v:refname \
+              | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' | head -n1 || true)"
+            if [ -n "$last_tag" ]; then
+              python3 - "${last_tag#v}" "$version" <<'PY'
+          import sys
+          old = tuple(map(int, sys.argv[1].split(".")))
+          new = tuple(map(int, sys.argv[2].split(".")))
+          if new <= old:
+              raise SystemExit("version override must be greater than the newest stable tag")
+          PY
+            elif [ "$version" != "0.1.0" ]; then
+              echo "the first stable release must be 0.1.0" >&2
+              exit 1
+            fi
+          else
+            version="$(bash scripts/next-version.sh)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ -z "$version" ]; then
+            echo "No release-worthy commits since the latest stable tag."
+            exit 0
+          fi
+          echo "Next stable version: $version"
+          last_tag="$(git tag --list 'v*' --merged HEAD --sort=-v:refname \
+            | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' | head -n1 || true)"
+          if [ -n "$last_tag" ]; then
+            git log --no-merges --format='- %s' "$last_tag..HEAD"
+          else
+            git log --no-merges --format='- %s' HEAD
+          fi
+
+      - name: Pre-flight release checks
+        if: steps.version.outputs.version != '' && (inputs.mode == 'auto' || inputs.mode == 'dry-run' || inputs.mode == 'version_override')
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          make release-check
+          VERSION="$VERSION" make build
+          reported="$(./bin/caged --version)"
+          if [ "$reported" != "caged version $VERSION" ]; then
+            echo "binary reports '$reported', expected 'caged version $VERSION'" >&2
             exit 1
           fi
-      - name: Publish
+          count="$(find dist -maxdepth 1 -type f -name 'caged_*_*.tar.gz' | wc -l | tr -d ' ')"
+          test "$count" -eq 4
+          test -f dist/checksums.txt
+
+      - name: Report dry run
+        if: inputs.mode == 'dry-run'
+        run: |
+          echo "Dry run only. No tag, GitHub release, or tap update was created."
+          echo "Review the selected version and commit subjects in the job log."
+
+      - name: Select recovery tag
+        id: recovery
+        if: inputs.mode == 'recover'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: goreleaser release --clean --release-notes release-notes.md
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ! [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "recover requires a stable tag such as v0.1.0" >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor "$TAG" origin/main || {
+            echo "$TAG is not reachable from main" >&2
+            exit 1
+          }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Recover existing release
+        if: inputs.mode == 'recover'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/publish-release.sh "${{ steps.recovery.outputs.tag }}"
+
+      - name: Create and push stable tag
+        if: steps.version.outputs.version != '' && (inputs.mode == 'auto' || inputs.mode == 'version_override')
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          tag="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "tag $tag already exists; published tags are never reused" >&2
+            exit 1
+          fi
+          git tag -a "$tag" -m "Release $tag" "$GITHUB_SHA"
+          gh auth setup-git
+          git push origin "$tag"
+
+      - name: Publish release and notify tap
+        if: steps.version.outputs.version != '' && (inputs.mode == 'auto' || inputs.mode == 'version_override')
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/publish-release.sh "v${{ steps.version.outputs.version }}"

@@ -6,7 +6,7 @@ leftover temp entries: 0
 fake docker run output
 === stderr
 command: ["bash"]
-image: no extension (~/.config/caged/image.json not found)
+image: no image.apt packages in ~/.config/caged/config.yaml
 image: caged-runtime:latest is current (runtime $RUNTIME_HASH12)
 === docker invocations
 info

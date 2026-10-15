@@ -7,7 +7,7 @@ fake docker build output
 fake docker run output
 === stderr
 WARNING: allowlisted agent credentials are available inside the container.
-Building image extension from ~/.config/caged/image.json (apt: neovim, tmux)...
+Building image extension from ~/.config/caged/config.yaml (apt: neovim, tmux)...
 === docker invocations
 info
 --format
@@ -67,6 +67,8 @@ $ROOT/home/.copilot:/home/caged/.copilot
 $ROOT/home/.gemini/oauth_creds.json:/home/caged/.gemini/oauth_creds.json
 -v
 $ROOT/home/.gemini/settings.json:/home/caged/.gemini/settings.json
+-v
+$ROOT/home/.gemini/settings.json:/home/caged/.gemini/current-settings.json
 -v
 $ROOT/home/.config/gh:/home/caged/.config/gh
 -v

@@ -68,6 +68,8 @@ $ROOT/home/.gemini/oauth_creds.json:/home/caged/.gemini/oauth_creds.json
 -v
 $ROOT/home/.gemini/settings.json:/home/caged/.gemini/settings.json
 -v
+$ROOT/home/.gemini/settings.json:/home/caged/.gemini/current-settings.json
+-v
 $ROOT/home/.config/gh:/home/caged/.config/gh
 -v
 $ROOT/home/.pi:/home/caged/.pi

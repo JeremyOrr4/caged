@@ -1,6 +1,11 @@
-package extension
+package userconfig
 
-import "sort"
+import (
+	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
+)
 
 // validAptName reports whether name is a Debian package name that caged
 // accepts: at least two characters of lowercase letters, digits, "+", "-" and
@@ -38,4 +43,27 @@ func sortedUnique(names []string) []string {
 		}
 	}
 	return unique
+}
+
+// checkPath accepts "~", a path starting with "~/", or an absolute path, and
+// nothing with "$" in it: caged does not expand variables.
+func checkPath(source, field, path string) error {
+	if path == "" {
+		return fmt.Errorf("%s: %s entry has no path (a bare ~ is YAML null; quote it as \"~\")", source, field)
+	}
+	if (path == "~" || strings.HasPrefix(path, "~/") || filepath.IsAbs(path)) && !strings.Contains(path, "$") {
+		return nil
+	}
+	return fmt.Errorf("%s: %s entry %q must be an absolute path or start with ~/", source, field, path)
+}
+
+// expand turns a checked path into a host path.
+func expand(home, path string) string {
+	if path == "~" {
+		return filepath.Clean(home)
+	}
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		return filepath.Join(home, rest)
+	}
+	return filepath.Clean(path)
 }
