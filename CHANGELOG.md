@@ -1,12 +1,9 @@
 # Changelog
 
-All notable changes to caged are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and caged follows
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the version is
-0.x, flags and output can still change; such changes are called out below.
-
-Each pull request into `dev` adds a line under `Unreleased`. The release PR moves
-those lines under the new version.
+This file records the initial project history. Starting with automated
+releases, generated release notes are published on the
+[GitHub Releases page](https://github.com/JeremyOrr4/caged/releases). While the
+version is 0.x, flags and output can still change.
 
 ## [Unreleased]
 

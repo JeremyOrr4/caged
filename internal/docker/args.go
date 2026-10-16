@@ -10,7 +10,11 @@ import (
 )
 
 // runArgs translates a run plan into `docker run` arguments.
-func runArgs(spec plan.RunSpec, platform system.Platform) []string {
+func runArgs(spec plan.RunSpec, platform system.Platform, fileMaskSources ...string) []string {
+	fileMaskSource := "/dev/null"
+	if len(fileMaskSources) > 0 && fileMaskSources[0] != "" {
+		fileMaskSource = fileMaskSources[0]
+	}
 	args := []string{"run", "-it", "--rm"}
 	for _, port := range spec.Ports {
 		args = append(args, "-p", fmt.Sprintf("%s:%d:%d", port.HostIP, port.HostPort, port.ContainerPort))
@@ -31,6 +35,10 @@ func runArgs(spec plan.RunSpec, platform system.Platform) []string {
 		for _, mask := range mount.MaskPaths {
 			maskedPath := strings.TrimSuffix(mount.DestPath, "/") + "/" + strings.TrimPrefix(filepath.ToSlash(mask), "/")
 			args = append(args, "--tmpfs", maskedPath)
+		}
+		for _, mask := range mount.MaskFiles {
+			maskedPath := strings.TrimSuffix(mount.DestPath, "/") + "/" + strings.TrimPrefix(filepath.ToSlash(mask), "/")
+			args = append(args, "-v", fileMaskSource+":"+maskedPath+":ro")
 		}
 	}
 	args = append(args, userArgs(platform)...)

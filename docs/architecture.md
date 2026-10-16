@@ -8,7 +8,7 @@ caged codex 'fix tests'
  [1 parse]    internal/cli      argv + flags -> app.Request (agent looked up, env names validated,
    |                            -p values kept as strings in Request.Ports)
    |
- [2 plan]     internal/app      Runner.Run first loads the image extension (a bad image.json fails here),
+ [2 plan]     internal/app      Runner.Run first loads the image extension (a bad config.yaml fails here),
    |                            then Planner.Plan: ports (plan.ParsePorts, first) + project mount +
    |                            config mounts + env names
    |                            -> plan.RunSpec (pure data, no Docker knowledge);
@@ -28,8 +28,35 @@ Docker daemon. Only `internal/system` touches the operating system.
 
 Existing agent configs mount read-write so settings and login changes persist.
 The shared `.gitconfig` mount is read-only. Missing config paths are skipped;
-paths and symlinks resolving outside the home directory, and trees containing
-special files, are refused. `--no-config` disables these mounts.
+trees containing special files are refused. `--no-config` disables these mounts.
+
+Symlinks in agent config (Stow-managed dotfiles, for example) are followed on
+the host, never by Docker. Each target is resolved and checked by
+`pathpolicy` against the user's `links.allow` roots and the built-in deny list
+(`pathpolicy.BuiltinDeny`); a target inside the link's own config folder needs
+no policy. Where a mount goes depends on how the config is mounted:
+
+- **Split trees.** A directory that holds symlinks is not mounted whole. Its
+  symlink-free subtrees are mounted directly, and each symlink's target is
+  mounted at the logical path of the link (`~/.claude/CLAUDE.md` becomes a
+  mount of the target at `/home/caged/.claude/CLAUDE.md`). A config root that
+  is itself a symlink is mounted at the root's own container path.
+- **Whole trees** (Codex, whose runtime directories are masked with tmpfs). The
+  directory is mounted whole, so its symlinks are visible in the container and
+  resolve there. Each link that leaves the tree is followed by mounting its
+  target where the link points inside the container, computed by
+  `containerLinkDest`: a relative link must stay below `/home/caged` and climb
+  with `..` only at its start; an absolute link must lie in the host home or a
+  `links.allow` root and outside the system directories.
+
+A symlink mount whose container path lies inside another mount is refused
+(Docker would create the mount point inside that host directory). At most 64
+symlinks are followed, and symlinked directories nest at most 8 deep.
+
+Known limits: the deny list does not apply to files directly inside an agent
+config directory (those are the agent's own files, mounted as before), and
+paths are checked when the run is planned, not when Docker starts the
+container (a time-of-check to time-of-use gap).
 
 ## Package layout
 
@@ -38,7 +65,8 @@ cmd/caged/            composition root: the only place that picks concrete types
 internal/cli/         Cobra commands (one file each) and flags -> app requests; nothing else
 internal/app/         use cases: Runner (run) and Builder (build), and Planner (Request -> RunSpec; runspec.go assembles the RunSpec)
 internal/plan/        specs that flow down: RunSpec, Mount, ConfigMount, ConfigReport, BuildSpec
-internal/extension/   locate, read, and validate the user's image.json -> plan.Extension
+internal/userconfig/  locate, read, and validate the user's config.yaml -> plan.Extension, plan.ConfigStatus, and the link and workdir policies
+internal/pathpolicy/  allow and deny lists for host paths (no IO) -> pathpolicy.Policy
 internal/engine/      facts and errors that flow up: Kind, Error, DaemonInfo, ImageInfo
 internal/agent/       Agent definition, Registry, one file per built-in agent
 internal/project/     project directory validation -> plan.Mount
@@ -52,14 +80,15 @@ internal/system/      thin OS adapters: FS, Env, Executor, Platform, Stdio
 
 | Package | May import (caged packages) |
 |---|---|
-| `cmd/caged` | `agent`, `app`, `cli`, `docker`, `extension`, `hostconfig`, `project`, `system` |
+| `cmd/caged` | `agent`, `app`, `cli`, `docker`, `hostconfig`, `project`, `system`, `userconfig` |
 | `internal/cli` | `agent`, `app` |
 | `internal/app` | `agent`, `engine`, `images`, `plan` |
 | `internal/docker` | `engine`, `plan`, `system` |
 | `internal/engine` | nothing |
-| `internal/extension` | `plan` |
-| `internal/hostconfig` | `agent`, `plan` |
-| `internal/project` | `plan` |
+| `internal/hostconfig` | `agent`, `pathpolicy`, `plan` |
+| `internal/pathpolicy` | nothing |
+| `internal/project` | `pathpolicy`, `plan` |
+| `internal/userconfig` | `pathpolicy`, `plan` |
 | `internal/images` | `plan` |
 | `internal/plan` | nothing |
 | `internal/agent` | nothing |
@@ -91,7 +120,8 @@ the right.
 | `cli` | `ListService` | `List() ([]app.AgentStatus, error)` | `*app.Lister` |
 | `cli` | `CleanService` | `Clean(ctx, app.CleanOptions) ([]app.CleanResult, error)` | `*app.Cleaner` |
 | `cli` | `Agents` | `Lookup(name) (agent.Agent, error)`, `Names() []string` | `*agent.Registry` |
-| `app` | `Extensions` | `Load() (*plan.Extension, error)`, `Source() (string, error)` | `*extension.Loader` |
+| `app` | `Extensions` | `Load() (*plan.Extension, error)`, `Source() (string, error)` | `*userconfig.Store` |
+| `app` | `ConfigFile` | `Status() (plan.ConfigStatus, error)` | `*userconfig.Store` |
 | `app` | `ImageInspector` | `InspectImage(ctx, ref) (engine.ImageInfo, error)` | `*docker.Client` |
 | `app` | `ImageLister` | `ListImages(ctx, engine.ImageQuery) ([]engine.ImageSummary, error)` | `*docker.Client` |
 | `app` | `Prober` | `ReadImageFile(ctx, ref, path) ([]byte, error)`, `ProbeMount(ctx, ref, plan.Mount) error` | `*docker.Client` |
@@ -101,10 +131,12 @@ the right.
 | `app` | `RunPlanner` | `Plan(Request, imageRef string, *Reporter) (plan.RunSpec, error)` | `*app.Planner` |
 | `app` | `Env` | `LookupEnv(key) (string, bool)`, `UserHomeDir() (string, error)`, `Getwd() (string, error)` | `system.Env` |
 | `app` | `ProjectResolver` | `Resolve(workDir, home string, allowBroadMount bool) (*plan.Mount, error)` | `*project.Resolver` |
-| `app` | `ConfigResolver` | `Resolve(home string) plan.ConfigReport` | `*hostconfig.Resolver` |
-| `extension` | `FileSystem` | `ReadFile` | `system.FS` |
-| `extension` | `Env` | `LookupEnv(key) (string, bool)`, `UserHomeDir() (string, error)` | `system.Env` |
-| `hostconfig` | `FileSystem` | `Stat`, `Lstat`, `ReadDir`, `EvalSymlinks`, `WalkDir` | `system.FS` |
+| `app` | `ConfigResolver` | `Resolve(home string) (plan.ConfigReport, error)` | `*hostconfig.Resolver` |
+| `userconfig` | `FileSystem` | `ReadFile`, `Stat`, `EvalSymlinks` | `system.FS` |
+| `userconfig` | `Env` | `LookupEnv(key) (string, bool)`, `UserHomeDir() (string, error)` | `system.Env` |
+| `hostconfig` | `FileSystem` | `Stat`, `Lstat`, `ReadDir`, `EvalSymlinks`, `WalkDir`, `Readlink` | `system.FS` |
+| `hostconfig` | `LinkPolicies` | `LinkPolicy(home string) (*pathpolicy.Policy, error)` | `*userconfig.Store` |
+| `project` | `WorkdirPolicies` | `WorkdirPolicy(home string) (*pathpolicy.Policy, error)` | `*userconfig.Store` |
 | `hostconfig` | `Env` | `LookupEnv(key) (string, bool)` | `system.Env` |
 | `project` | `FileSystem` | `Abs`, `Stat`, `EvalSymlinks` | `system.FS` |
 | `docker` | `Executor` | `LookPath(file) (string, error)`, `Run(ctx, system.Command) error` | `system.Executor` |
@@ -290,7 +322,7 @@ development-only Dockerfile is `dev/Dockerfile`.
 
 ### Image extension
 
-If the user has an `image.json` (`internal/extension`), caged builds a second
+If the user's `config.yaml` lists `image.apt` packages (`internal/userconfig`), caged builds a second
 image on top of the runtime image: the tag `caged-runtime:ext`, from a
 generated Dockerfile (`FROM caged-runtime:latest`, then one `apt-get install`
 of the sorted, de-duplicated package list). The package names are validated
@@ -303,5 +335,5 @@ therefore rebuilds the extension. The extension is built after the runtime
 image; when both are replaced, the old extension image is removed before the
 old runtime image, because a base cannot be removed while a child image
 depends on it. A failed extension build names the file, because it blocks
-every run until the file is fixed. With no file, runs use `caged-runtime:latest`
+every run until the file is fixed. With no packages, runs use `caged-runtime:latest`
 and a leftover `caged-runtime:ext` tag is ignored.
