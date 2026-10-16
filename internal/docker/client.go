@@ -226,6 +226,15 @@ func (c *Client) ListImages(ctx context.Context, q engine.ImageQuery) ([]engine.
 	return parseImageList(stdout.Bytes())
 }
 
+func hasConfigFileMasks(mounts []plan.ConfigMount) bool {
+	for _, mount := range mounts {
+		if len(mount.MaskFiles) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // RunContainer starts an interactive, disposable container and waits for it to
 // exit. A non-zero container exit is returned unchanged so its code can be
 // passed on.
@@ -234,16 +243,59 @@ func (c *Client) RunContainer(ctx context.Context, spec plan.RunSpec) error {
 	if err != nil {
 		return err
 	}
+	var piMountIndexes []int
+	var piMounts []system.PiConfigMount
+	for i, mount := range spec.ConfigMounts {
+		if mount.Agent != "pi" {
+			continue
+		}
+		piMountIndexes = append(piMountIndexes, i)
+		piMounts = append(piMounts, system.PiConfigMount{
+			Root: mount.Root, HostPath: mount.HostPath, DestPath: mount.DestPath,
+			MaskPaths: mount.MaskPaths, MaskFiles: mount.MaskFiles, Link: mount.Link,
+		})
+	}
+	stagedMounts, cleanupStage, persistStage, err := system.StagePiMounts(piMounts)
+	if err != nil {
+		return err
+	}
+	for i, mount := range stagedMounts {
+		target := spec.ConfigMounts[piMountIndexes[i]]
+		target.HostPath = mount.HostPath
+		target.MaskPaths = mount.MaskPaths
+		target.MaskFiles = mount.MaskFiles
+		spec.ConfigMounts[piMountIndexes[i]] = target
+	}
+	maskSource := ""
+	if hasConfigFileMasks(spec.ConfigMounts) {
+		dir, err := c.fs.MkdirTemp("", "caged-run-masks-")
+		if err != nil {
+			return fmt.Errorf("create config mask source: %w", err)
+		}
+		defer func() { _ = c.fs.RemoveAll(dir) }()
+		maskSource = filepath.Join(dir, "empty-file")
+		if err := c.fs.WriteFile(maskSource, nil, 0o600); err != nil {
+			return fmt.Errorf("create config mask file: %w", err)
+		}
+	}
 	var stderr bytes.Buffer
-	err = c.exec.Run(ctx, system.Command{
+	runErr := c.exec.Run(ctx, system.Command{
 		Path:   docker,
-		Args:   runArgs(spec, c.platform),
+		Args:   runArgs(spec, c.platform, maskSource),
 		Stdin:  c.stdio.In,
 		Stdout: c.stdio.Out,
 		Stderr: io.MultiWriter(c.stdio.Err, &stderr),
 	})
-	if err != nil {
-		return classifyRunError(c.platform, spec, stderr.String(), err)
+	persistErr := persistStage()
+	cleanupErr := cleanupStage()
+	if runErr != nil {
+		runErr = classifyRunError(c.platform, spec, stderr.String(), runErr)
+	}
+	if runErr != nil || persistErr != nil || cleanupErr != nil {
+		if persistErr == nil && cleanupErr == nil {
+			return runErr
+		}
+		return errors.Join(runErr, persistErr, cleanupErr)
 	}
 	return nil
 }
