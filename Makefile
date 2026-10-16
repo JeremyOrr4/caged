@@ -1,4 +1,4 @@
-.PHONY: build run test fmt vet install clean docker-build docker-shell \
+.PHONY: build run test fmt vet clean docker-build docker-shell \
 	check fmt-check tidy-check test-race lint vuln cross-build \
 	test-release-scripts release-check release-snapshot
 
@@ -20,9 +20,6 @@ fmt:
 
 vet:
 	go vet ./...
-
-install:
-	go install -ldflags "-X main.version=$(VERSION)" ./cmd/caged
 
 clean:
 	rm -rf bin dist
