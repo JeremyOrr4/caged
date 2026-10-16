@@ -17,7 +17,8 @@ type ConfigMount struct {
 	// resolution. HostPath is where the mount actually comes from.
 	Root      string
 	Writable  bool
-	MaskPaths []string
+	MaskPaths []string // directory paths hidden with tmpfs, relative to DestPath
+	MaskFiles []string // file paths hidden with a temporary empty-file bind, relative to DestPath
 	// Link is the host symlink this mount follows; "" for a direct mount.
 	Link string
 }

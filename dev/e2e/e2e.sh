@@ -309,8 +309,17 @@ if inS L; then section "L. symlinked agent config and links.allow"
   tty 'cat ~/.claude/agents/a.md; echo more >> ~/.claude/agents/a.md; exit' $C1 --verbose
   has "L5 a linked directory reads through the link" "$OUT" "agent-a"; has "L5 verbose reports the link" "$OUT" "(via link $H/.claude/agents)"; has "L5 a write through the linked directory reaches the dotfiles" "$(cat $H/dotfiles/claude/agents/a.md)" "more"
   # L6 a config root that is itself a link (Stow's ~/.pi)
-  rm -rf $H/.pi; mkdir -p $H/dotfiles/pi/.pi/agent; echo '{"stow":1}' > $H/dotfiles/pi/.pi/agent/settings.json; ln -s dotfiles/pi/.pi $H/.pi
+  rm -rf $H/.pi; mkdir -p $H/dotfiles/pi/.pi/agent; echo '{"stow":1}' > $H/dotfiles/pi/.pi/agent/settings-target.json; ln -s settings-target.json $H/dotfiles/pi/.pi/agent/settings.json; ln -s dotfiles/pi/.pi $H/.pi
   tty 'cat ~/.pi/agent/settings.json; exit' $C1 --verbose; has "L6 a symlinked config root is mounted" "$OUT" '{"stow":1}'; has "L6 and reported as a link" "$OUT" "(via link $H/.pi)"
+  mkdir -p $H/dotfiles/pi/.pi/agent/extensions-target; ln -s extensions-target $H/dotfiles/pi/.pi/agent/extensions-link
+  tty 'printf "{}\n" > ~/.pi/agent/keybindings.json; exit' $C1
+  has "L6b a newly created Pi config file reaches the host" "$(cat $H/dotfiles/pi/.pi/agent/keybindings.json)" '{}'
+  # L6c symlinks added after an earlier run are resolved again on the next run.
+  ln -s settings-target.json $H/dotfiles/pi/.pi/agent/future-settings.json
+  ln -s extensions-target $H/dotfiles/pi/.pi/agent/future-extensions
+  tty 'printf "updated\n" > ~/.pi/agent/future-settings.json; printf "new extension\n" > ~/.pi/agent/future-extensions/new.js; exit' $C1
+  eq "L6c a newly added file link writes through to its target" "$(cat $H/dotfiles/pi/.pi/agent/settings-target.json)" updated
+  eq "L6c a newly added directory link persists new files" "$(cat $H/dotfiles/pi/.pi/agent/extensions-target/new.js)" "new extension"
   # L7 a link inside a linked directory, to a root that is not allowed, then allowed
   mkdir -p $H/dotfiles2; echo shared-note > $H/dotfiles2/shared.md; ln -s ../../../dotfiles2/shared.md $H/dotfiles/claude/agents/shared.md
   tty 'cat ~/.claude/agents/shared.md 2>&1; exit' $C1 --verbose

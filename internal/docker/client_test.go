@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -331,6 +332,70 @@ func TestRunContainerConnectsStdioAndPassesArgs(t *testing.T) {
 	}
 	if stderr.String() != "container stderr\n" {
 		t.Fatalf("stderr = %q, want the container's stderr passed through", stderr.String())
+	}
+}
+
+func TestRunContainerStagesPiConfigSymlinksAndPersistsNewFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".pi")
+	target := filepath.Join(t.TempDir(), "dotfiles", "settings.json")
+	if err := os.MkdirAll(filepath.Join(root, "agent"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("initial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "agent", "settings.json")
+	if err := os.Symlink("../../dotfiles/settings.json", link); err != nil {
+		t.Fatal(err)
+	}
+	rootDest := "/home/caged/.pi"
+	linkDest := rootDest + "/agent/settings.json"
+	exec := &fakeExecutor{run: func(cmd system.Command) error {
+		if cmd.Args[0] != "run" {
+			return nil
+		}
+		var rootStage, targetStage string
+		for i := 0; i+1 < len(cmd.Args); i++ {
+			if cmd.Args[i] != "-v" {
+				continue
+			}
+			source, destination, ok := strings.Cut(cmd.Args[i+1], ":")
+			if !ok {
+				continue
+			}
+			switch destination {
+			case rootDest:
+				rootStage = source
+			case linkDest:
+				targetStage = source
+			}
+		}
+		if rootStage == root || targetStage == target || rootStage == "" || targetStage == "" {
+			return errors.New("Pi mounts were not safely staged")
+		}
+		if err := os.WriteFile(filepath.Join(rootStage, "agent", "keybindings.json"), []byte("{}"), 0o600); err != nil {
+			return err
+		}
+		return os.WriteFile(targetStage, []byte("updated"), 0o600)
+	}}
+	spec := plan.RunSpec{Image: "img", ConfigMounts: []plan.ConfigMount{
+		{Agent: "pi", Root: root, HostPath: root, DestPath: rootDest, Writable: true, MaskFiles: []string{"agent/settings.json"}},
+		{Agent: "pi", Root: root, HostPath: target, DestPath: linkDest, Writable: true, Link: link},
+	}}
+	if err := NewClient(exec, &fakeFS{}, linux, system.Stdio{}).RunContainer(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "agent", "keybindings.json")); err != nil || string(got) != "{}" {
+		t.Fatalf("new Pi config file on host = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "updated" {
+		t.Fatalf("linked Pi config file on host = %q, %v", got, err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("host symlink was altered: info=%v err=%v", info, err)
 	}
 }
 
