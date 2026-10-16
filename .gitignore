@@ -4,6 +4,4 @@ dist/
 *.test
 .DS_Store
 **/.DS_Store
-docs/*
-!docs/plan-first-run-config-and-container-mount.md
-!docs/first-run-config-feature-outline.md
+docs/
