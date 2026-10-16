@@ -475,10 +475,14 @@ func fileDigest(path string) ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, err
 	}
-	defer file.Close()
 	digest := sha256.New()
-	if _, err := io.Copy(digest, file); err != nil {
-		return [32]byte{}, err
+	_, copyErr := io.Copy(digest, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return [32]byte{}, copyErr
+	}
+	if closeErr != nil {
+		return [32]byte{}, closeErr
 	}
 	var out [32]byte
 	copy(out[:], digest.Sum(nil))
@@ -514,12 +518,16 @@ func copyRegular(source, target string, mode fs.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer from.Close()
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode.Perm())
 	if err != nil {
+		_ = from.Close()
 		return err
 	}
 	_, copyErr := io.Copy(out, from)
+	fromErr := from.Close()
+	if copyErr == nil {
+		copyErr = fromErr
+	}
 	if copyErr == nil {
 		copyErr = out.Chmod(mode.Perm())
 	}
@@ -544,7 +552,7 @@ func replaceRegular(source, target string, mode fs.FileMode) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 	from, err := os.Open(source)
 	if err != nil {
 		_ = tmp.Close()

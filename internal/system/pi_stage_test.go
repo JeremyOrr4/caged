@@ -32,7 +32,11 @@ func TestStagePiMountsKeepsDockerDestinationsSymlinkFreeAndPersistsWrites(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup staging directory: %v", err)
+		}
+	})
 	if len(staged) != 2 || strings.Contains(staged[0].HostPath, root) || strings.Contains(staged[1].HostPath, target) || staged[0].HostPath == staged[1].HostPath {
 		t.Fatalf("Pi mounts were not redirected to temporary staging sources: %+v", staged)
 	}
@@ -89,7 +93,11 @@ func TestStagePiMountsDoesNotOverwriteConcurrentHostChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup staging directory: %v", err)
+		}
+	})
 	if err := os.WriteFile(filepath.Join(staged[0].HostPath, "agent", "settings.json"), []byte("container edit"), 0o600); err != nil {
 		t.Fatal(err)
 	}
