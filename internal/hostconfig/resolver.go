@@ -242,6 +242,10 @@ func (r *resolution) linked(hostPath, resolved string) bool {
 // mountTree mounts root, a resolved file or directory, at dest: its largest
 // symlink-free subtrees directly, and each symlink inside it through followLink.
 func (r *resolution) mountTree(o owner, root, dest string, depth int, via string) {
+	if o.agent == "pi" {
+		r.mountPiTree(o, root, dest, depth, via)
+		return
+	}
 	mounts, links, refused := collectSafeMounts(r.fs, root)
 	for _, refusal := range refused {
 		r.report.Refused = appendUnique(r.report.Refused, refusal)
@@ -250,6 +254,78 @@ func (r *resolution) mountTree(o owner, root, dest string, depth int, via string
 		if mountDest, ok := r.below(root, mountPath, dest); ok {
 			r.addMount(o, mountPath, mountDest, nil, via)
 		}
+	}
+	for _, link := range links {
+		if linkDest, ok := r.below(root, link, dest); ok {
+			r.followLink(o, root, link, linkDest, depth)
+		}
+	}
+}
+
+// mountPiTree mounts a Pi config directory as a writable tree so Pi can create
+// files as well as edit existing ones. Symlinks and special files are hidden
+// with child mounts; allowed symlink targets are mounted back at their logical
+// paths by followLink. This keeps the mount scoped to Pi config, not home.
+func (r *resolution) mountPiTree(o owner, root, dest string, depth int, via string) {
+	info, err := r.fs.Lstat(root)
+	if err != nil {
+		r.refuse(root, "cannot inspect config root safely")
+		return
+	}
+	if !info.IsDir() {
+		r.addMount(o, root, dest, nil, via)
+		return
+	}
+
+	var masks, maskFiles, links []string
+	err = r.fs.WalkDir(root, func(name string, _ fs.DirEntry, walkErr error) error {
+		if name == root {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, name)
+		if relErr != nil {
+			return relErr
+		}
+		mask := filepath.ToSlash(rel)
+		if walkErr != nil {
+			if entryInfo, statErr := r.fs.Lstat(name); statErr == nil && entryInfo.IsDir() {
+				masks = append(masks, mask)
+			} else {
+				maskFiles = append(maskFiles, mask)
+			}
+			r.refuse(name, "cannot inspect config entry safely")
+			return nil
+		}
+		entryInfo, statErr := r.fs.Lstat(name)
+		if statErr != nil {
+			maskFiles = append(maskFiles, mask)
+			r.refuse(name, "cannot inspect config entry safely")
+			return nil
+		}
+		if entryInfo.Mode()&fs.ModeSymlink != 0 {
+			links = append(links, name)
+			target, evalErr := r.fs.EvalSymlinks(name)
+			if evalErr == nil {
+				if targetInfo, targetErr := r.fs.Stat(target); targetErr == nil && targetInfo.IsDir() {
+					masks = append(masks, mask)
+					return nil
+				}
+			}
+			maskFiles = append(maskFiles, mask)
+			return nil
+		}
+		if !entryInfo.IsDir() && !entryInfo.Mode().IsRegular() {
+			maskFiles = append(maskFiles, mask)
+			r.refuse(name, "special files are excluded from config mounts")
+		}
+		return nil
+	})
+	if err != nil {
+		r.refuse(root, "cannot inspect config tree safely")
+		return
+	}
+	if r.addMount(o, root, dest, masks, via) {
+		r.report.Mounts[len(r.report.Mounts)-1].MaskFiles = maskFiles
 	}
 	for _, link := range links {
 		if linkDest, ok := r.below(root, link, dest); ok {
@@ -342,10 +418,11 @@ func (r *resolution) below(root, hostPath, dest string) (string, bool) {
 
 // addMount records a mount of hostPath at dest, a container path, unless the
 // same host path is already mounted there. link is the symlink it follows.
-func (r *resolution) addMount(o owner, hostPath, dest string, masks []string, link string) {
+// It reports whether it added the mount.
+func (r *resolution) addMount(o owner, hostPath, dest string, masks []string, link string) bool {
 	key := hostPath + "\x00" + dest
 	if _, ok := r.seen[key]; ok {
-		return
+		return false
 	}
 	r.seen[key] = struct{}{}
 	r.report.Mounts = append(r.report.Mounts, plan.ConfigMount{
@@ -358,6 +435,7 @@ func (r *resolution) addMount(o owner, hostPath, dest string, masks []string, li
 		MaskPaths: masks,
 		Link:      link,
 	})
+	return true
 }
 
 // dropNestedLinkMounts refuses symlink mounts whose destination lies inside
@@ -365,7 +443,7 @@ func (r *resolution) addMount(o owner, hostPath, dest string, masks []string, li
 func (r *resolution) dropNestedLinkMounts() {
 	var kept []plan.ConfigMount
 	for _, mount := range r.report.Mounts {
-		if mount.Link != "" && mount.Link != mount.Root && r.insideOtherMount(mount) {
+		if mount.Agent != "pi" && mount.Link != "" && mount.Link != mount.Root && r.insideOtherMount(mount) {
 			r.refuse(mount.Link, "symlink target would be mounted inside another mount at "+mount.DestPath)
 			continue
 		}

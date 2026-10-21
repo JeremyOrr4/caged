@@ -10,9 +10,9 @@ Docker Desktop on macOS is the supported setup. Linux is best effort.
 
 ```sh
 brew install jeremyorr4/tap/caged
-# or
-go install github.com/JeremyOrr4/caged/cmd/caged@latest
 ```
+
+Upgrade with `brew upgrade caged`.
 
 You can also download a macOS or Linux binary (amd64 or arm64) from the [releases page](https://github.com/JeremyOrr4/caged/releases). From a checkout, run `make build` to create `bin/caged`.
 

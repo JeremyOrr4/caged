@@ -34,7 +34,7 @@
 | Flag passthrough | `--` passes arguments to the agent unchanged, after the prompt |
 | Prompt launch | `caged <cli> 'prompt'` is wanted (not built yet) |
 | Image freshness | Hash label; rebuild automatically; unlabeled = stale |
-| Image extensions | User-level `image.json`, apt only, tag `caged-runtime:ext` |
+| Image extensions | User-level `config.yaml` (`image.apt`), apt only, tag `caged-runtime:ext` |
 | Ports | Opt-in `-p`/`--publish`, bound to 127.0.0.1; no host address or ranges |
 | Distribution | GitHub release binaries, `go install`, and a Homebrew tap (formula built from source) from v0.1.0 |
 | Refactor | Free to restructure and change flags (unreleased project) |
@@ -52,7 +52,7 @@ caged 0.1.0 does what the intended workflow in Section 2 describes:
 - The host configs of **all** supported CLIs are mounted read-write on every run, so every CLI is ready and changes
   persist. Missing configs are skipped; unsafe paths are refused. The GitHub CLI (`gh`) is included.
 - One image holds all CLIs. It is built locally from an embedded Dockerfile, labeled with a hash of its build files,
-  rebuilt automatically when that hash changes, and extendable with apt packages from a user-level `image.json`.
+  rebuilt automatically when that hash changes, and extendable with apt packages from `image.apt` in a user-level `config.yaml`.
 - Ports (`-p`), flag passthrough (`--`), `caged doctor`, `caged list`, and `caged clean` exist (Section 5).
 - Releases are tagged, with GitHub binaries and a Homebrew tap (NFR-7).
 
@@ -122,7 +122,7 @@ Config mounting alone gives a logged-in session on Linux but not on a Mac, so we
 - A hardened security boundary against a hostile agent. It limits blast radius; it is not a VM. (Section 9)
 - Remote or cloud execution, GUI, multi-session orchestration.
 - OrbStack/Colima/Windows support, and Keychain extraction (all deferred).
-- Local-LLM wiring. A permanent `caged` config file is deferred too, apart from the image extension file (`~/.config/caged/image.json`); other settings are not read from a file.
+- Local-LLM wiring. The permanent `caged` config file is `~/.config/caged/config.yaml`, which holds `image.apt`, the symlink policy (`links`), and `workdirs`; no other settings are read from a file.
 
 ## 5. User-Facing Interface
 
@@ -135,7 +135,7 @@ Config mounting alone gives a logged-in session on Linux but not on a Mac, so we
 | `caged <cli> '<prompt>'` | Launch the CLI with an initial prompt | **[DONE]** |
 | `caged build [--no-cache]` | Build/rebuild the runtime image | **[DONE]** |
 | `caged list` | List supported CLIs, the host config detected for each, and which auth environment variables are set (names only) | **[DONE]** |
-| `caged doctor [-w DIR]` | Check Docker, the images, the extension file, the image architecture, the project mount, and the CLI versions in the image; exits 1 when a check fails | **[DONE]** |
+| `caged doctor [-w DIR]` | Check Docker, the images, the config file, the symlinked config, the image architecture, the project mount, and the CLI versions in the image; exits 1 when a check fails | **[DONE]** |
 | `caged clean [--dry-run]` | Remove caged's Docker images (extension, runtime, replaced, and older unlabeled ones); never touches containers, volumes, the build cache, or config | **[DONE]** |
 
 ### 5.2 Flags (existing)
@@ -194,7 +194,7 @@ else:
 |---|---|---|
 | FR-11 | Existing host config is mounted **read-write** for every supported CLI so changes persist on the host | **MISSING** (only Pi today) |
 | FR-12 | Missing host config is skipped and never created on the host | DONE |
-| FR-13 | Symlinks that resolve outside `$HOME` are refused; sockets and special files are never exposed | DONE (in the staging copy path; must be re-checked once staging is removed) |
+| FR-13 | Symlinks in agent config are followed on the host and their targets mounted where the links point; a target outside the link's own config folder must be under `links.allow`, and the built-in deny list always wins; sockets and special files are never exposed | DONE |
 | FR-14 | `--no-config` disables all config mounts | DONE |
 | FR-15 | There is no `--no-auth`: with direct read-write mounts it could only mean "mount no configs", which `--no-config` already does | DONE (flag removed) |
 | FR-16 | Every run mounts the existing config for **all** supported CLIs (plain `caged` included), so you can switch CLIs from the shell | DONE (decided) |
@@ -229,9 +229,9 @@ Two more things to be aware of with direct mounts:
 | FR-29 | GitHub CLI installed in image, auth via `~/.config/gh` mount or token | DONE |
 | FR-30 | Other harnesses/tools via the registry | MISSING (later) |
 | FR-31 | Publish container ports on 127.0.0.1 with repeatable `-p`, validated before Docker runs | DONE |
-| FR-33 | `caged doctor` runs the checks docker, daemon, image, extension, ext-image, arch, project and versions in order; a check that depends on a failed one is skipped; it exits 1 only when a check fails and never builds, pulls, or removes anything | DONE |
+| FR-33 | `caged doctor` runs the checks docker, daemon, image, config, links, ext-image, arch, project and versions in order; a check that depends on a failed one is skipped; it exits 1 only when a check fails and never builds, pulls, or removes anything | DONE |
 | FR-34 | `caged clean [--dry-run]` removes caged's images, extension first, never with `-f`; an image in use is kept and reported | DONE |
-| FR-32 | Extra apt packages from a user-level `image.json`, built as `caged-runtime:ext` on top of the runtime image, validated before Docker runs | DONE |
+| FR-32 | Extra apt packages from `image.apt` in a user-level `config.yaml`, built as `caged-runtime:ext` on top of the runtime image, validated before Docker runs | DONE |
 
 ## 7. Non-Functional Requirements
 

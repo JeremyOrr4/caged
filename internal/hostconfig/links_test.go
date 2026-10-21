@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/JeremyOrr4/caged/internal/agent"
 	"github.com/JeremyOrr4/caged/internal/plan"
+	"github.com/JeremyOrr4/caged/internal/system"
 )
 
 const wantHintPrefix = `add "- path: `
@@ -137,13 +140,25 @@ func TestLinkedDirectoryIsMountedWhereTheLinkIs(t *testing.T) {
 func TestSymlinkedConfigRootIsFollowedWhenAllowed(t *testing.T) {
 	t.Parallel()
 	home, resolved := testHome(t, nil, nil)
-	writeFiles(t, home, "dotfiles/pi/.pi/agent/settings.json")
+	writeFiles(t, home, "dotfiles/pi/.pi/agent/settings.json", "dotfiles/pi/.pi/agent/settings-target.json", "dotfiles/pi/.pi/agent/extensions-target/example.js")
 	symlink(t, home, ".pi", "dotfiles/pi/.pi")
+	symlink(t, home, "dotfiles/pi/.pi/agent/settings-link.json", "settings-target.json")
+	symlink(t, home, "dotfiles/pi/.pi/agent/extensions-link", "extensions-target")
 
 	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
 	mount := mustMount(t, report, "/home/caged/.pi")
 	if mount.HostPath != filepath.Join(resolved, "dotfiles/pi/.pi") || mount.Link != filepath.Join(home, ".pi") || !mount.Writable {
 		t.Fatalf("mount = %+v", mount)
+	}
+	if len(mount.MaskPaths) != 1 || mount.MaskPaths[0] != "agent/extensions-link" {
+		t.Fatalf("Pi tree directory masks = %v, want the nested symlink masked", mount.MaskPaths)
+	}
+	if len(mount.MaskFiles) != 1 || mount.MaskFiles[0] != "agent/settings-link.json" {
+		t.Fatalf("Pi tree file masks = %v, want the file symlink masked", mount.MaskFiles)
+	}
+	linkMount := mustMount(t, report, "/home/caged/.pi/agent/extensions-link")
+	if linkMount.HostPath != filepath.Join(resolved, "dotfiles/pi/.pi/agent/extensions-target") {
+		t.Fatalf("Pi link target mount = %+v", linkMount)
 	}
 
 	report = resolveConfigs(t, home, nil)
@@ -153,6 +168,47 @@ func TestSymlinkedConfigRootIsFollowedWhenAllowed(t *testing.T) {
 	refusal := mustRefuse(t, report, filepath.Join(home, ".pi"))
 	if !strings.HasPrefix(refusal.Hint, wantHintPrefix) || !strings.Contains(refusal.Hint, "~/dotfiles/pi/.pi") {
 		t.Fatalf("Hint = %q", refusal.Hint)
+	}
+}
+
+func TestPiTreeFollowsLinksAddedAfterAnEarlierResolve(t *testing.T) {
+	t.Parallel()
+	home, resolved := testHome(t, nil, nil)
+	writeFiles(t, home, ".pi/agent/settings.json", ".ssh/id_e2e")
+	allow := []string{filepath.Join(home, "dotfiles")}
+
+	first := resolveConfigsWith(t, home, nil, policies{allow: allow})
+	if _, ok := mountAt(first, "/home/caged/.pi"); !ok {
+		t.Fatalf("initial Pi tree was not mounted: %+v", first)
+	}
+
+	writeFiles(t, home,
+		"dotfiles/pi/agent/future-settings.json",
+		"dotfiles/pi/agent/future-extensions/index.js",
+	)
+	symlink(t, home, ".pi/agent/future-settings.json", "../../dotfiles/pi/agent/future-settings.json")
+	symlink(t, home, ".pi/agent/future-extensions", "../../dotfiles/pi/agent/future-extensions")
+	symlink(t, home, ".pi/agent/future-secret", "../../.ssh/id_e2e")
+
+	second := resolveConfigsWith(t, home, nil, policies{allow: allow})
+	root := mustMount(t, second, "/home/caged/.pi")
+	if !slices.Contains(root.MaskFiles, "agent/future-settings.json") || !slices.Contains(root.MaskFiles, "agent/future-secret") {
+		t.Fatalf("new file symlinks were not masked from the parent tree: %v", root.MaskFiles)
+	}
+	if !slices.Contains(root.MaskPaths, "agent/future-extensions") {
+		t.Fatalf("new directory symlink was not masked from the parent tree: %v", root.MaskPaths)
+	}
+	if mount := mustMount(t, second, "/home/caged/.pi/agent/future-settings.json"); mount.HostPath != filepath.Join(resolved, "dotfiles/pi/agent/future-settings.json") {
+		t.Fatalf("new file link mount = %+v", mount)
+	}
+	if mount := mustMount(t, second, "/home/caged/.pi/agent/future-extensions"); mount.HostPath != filepath.Join(resolved, "dotfiles/pi/agent/future-extensions") {
+		t.Fatalf("new directory link mount = %+v", mount)
+	}
+	if _, ok := mountAt(second, "/home/caged/.pi/agent/future-secret"); ok {
+		t.Fatal("a newly added link to a denied target was mounted")
+	}
+	if refusal := mustRefuse(t, second, filepath.Join(resolved, ".pi/agent/future-secret")); !strings.Contains(refusal.Hint, "built-in deny list") {
+		t.Fatalf("new denied link refusal = %+v", refusal)
 	}
 }
 
@@ -372,5 +428,21 @@ func TestMoreThanSixtyFourLinksAreNotFollowed(t *testing.T) {
 	}
 	if len(over) != 1 || len(report.Refused) != 1 {
 		t.Fatalf("Refused = %v, want exactly one over-budget refusal", refusedStrings(report.Refused))
+	}
+}
+
+func TestResolvePiTreeListedTwiceKeepsMaskFilesOnTheRoot(t *testing.T) {
+	home, _ := testHome(t, []string{".st"}, []string{".st/a.json"})
+	if err := os.Symlink("a.json", filepath.Join(home, ".st", "filelink")); err != nil {
+		t.Fatal(err)
+	}
+	path := agent.ConfigPath{HostPath: ".st", ContainerPath: ".st", Writable: true}
+	agents := []agent.Agent{{Name: "pi", Command: []string{"pi"}, ConfigPaths: []agent.ConfigPath{path, path}}}
+	report, err := NewResolver(system.FS{}, fakeEnv{}, agents, nil, policies{}).Resolve(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Mounts) != 2 || len(report.Mounts[0].MaskFiles) != 1 || len(report.Mounts[1].MaskFiles) != 0 {
+		t.Fatalf("Mounts = %+v, want the root with one mask file and the link target with none", report.Mounts)
 	}
 }

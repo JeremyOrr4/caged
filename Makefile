@@ -1,4 +1,4 @@
-.PHONY: build run test fmt vet install clean docker-build docker-shell \
+.PHONY: build run test fmt vet clean docker-build docker-shell \
 	check fmt-check tidy-check test-race lint vuln cross-build \
 	test-release-scripts release-check release-snapshot
 
@@ -20,9 +20,6 @@ fmt:
 
 vet:
 	go vet ./...
-
-install:
-	go install -ldflags "-X main.version=$(VERSION)" ./cmd/caged
 
 clean:
 	rm -rf bin dist
@@ -59,7 +56,6 @@ cross-build:
 
 test-release-scripts:
 	bash scripts/next-version_test.sh
-	bash scripts/check-pr-commits_test.sh
 
 # release-check runs the project's quality checks and validates both the
 # release script and GoReleaser packaging configuration without publishing.

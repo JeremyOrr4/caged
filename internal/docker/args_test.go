@@ -269,6 +269,37 @@ func TestRunArgsExposeOnlyPlannedMounts(t *testing.T) {
 	}
 }
 
+func TestRunArgsMaskSymlinksBeforeMountingTheirTargets(t *testing.T) {
+	t.Parallel()
+
+	options := plan.RunSpec{Image: images.BaseRef, ConfigMounts: []plan.ConfigMount{
+		{HostPath: "/host/.pi", DestPath: "/home/caged/.pi", Writable: true, MaskPaths: []string{"agent/extensions-link"}, MaskFiles: []string{"agent/settings.json"}},
+		{HostPath: "/host/target", DestPath: "/home/caged/.pi/agent/extensions-link", Writable: true},
+	}}
+	args := runArgs(options, system.Platform{OS: "linux"}, "/tmp/empty-mask")
+	want := []string{
+		"-v", "/host/.pi:/home/caged/.pi",
+		"--tmpfs", "/home/caged/.pi/agent/extensions-link",
+		"-v", "/tmp/empty-mask:/home/caged/.pi/agent/settings.json:ro",
+		"-v", "/host/target:/home/caged/.pi/agent/extensions-link",
+	}
+	last := -1
+	for i := 0; i < len(want); {
+		found := -1
+		for j := last + 1; j < len(args)-1; j++ {
+			if args[j] == want[i] && args[j+1] == want[i+1] {
+				found = j
+				break
+			}
+		}
+		if found < 0 {
+			t.Fatalf("Docker args do not contain ordered pair %q %q: %q", want[i], want[i+1], args)
+		}
+		last = found + 1
+		i += 2
+	}
+}
+
 func TestRunArgsMaskCodexRuntimeDirectories(t *testing.T) {
 	t.Parallel()
 

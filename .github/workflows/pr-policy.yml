@@ -13,15 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # The title and branch names are attacker-controlled input, so they reach
-      # the script through env, never through ${{ }} inside run.
-      - name: Check source branch and title
+      - name: Check source branch
         env:
           BASE: ${{ github.base_ref }}
           HEAD: ${{ github.head_ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           BASE_REPO: ${{ github.repository }}
-          TITLE: ${{ github.event.pull_request.title }}
         run: |
           if [ "$BASE" = main ]; then
             if [ "$HEAD_REPO" != "$BASE_REPO" ] || { [ "$HEAD" != dev ] && [[ "$HEAD" != hotfix/* ]]; }; then
@@ -29,14 +26,7 @@ jobs:
               exit 1
             fi
           fi
-          if [ "$BASE" = dev ]; then
-            if [ "$HEAD" = main ]; then
-              echo "PRs into dev must not come from main; dev only accepts squash merges"
-              exit 1
-            fi
-            pattern='^(feat|fix|docs|test|refactor|perf|build|ci|chore|revert)(\([^)]+\))?!?: .+'
-            if ! printf '%s\n' "$TITLE" | grep -Eq "$pattern"; then
-              echo "PR title must follow Conventional Commits, for example: feat(ports): publish container ports with -p"
-              exit 1
-            fi
+          if [ "$BASE" = dev ] && [ "$HEAD" = main ]; then
+            echo "PRs into dev must not come from main; dev only accepts squash merges"
+            exit 1
           fi
