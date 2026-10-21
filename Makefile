@@ -56,7 +56,6 @@ cross-build:
 
 test-release-scripts:
 	bash scripts/next-version_test.sh
-	bash scripts/check-pr-commits_test.sh
 
 # release-check runs the project's quality checks and validates both the
 # release script and GoReleaser packaging configuration without publishing.

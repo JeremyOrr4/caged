@@ -1,7 +1,6 @@
 version: 2
 updates:
-  # target-branch dev: by default Dependabot targets the default branch (main),
-  # which pr-policy rejects.
+  # Keep dependency updates on the integration branch before release.
   - package-ecosystem: gomod
     directory: /
     target-branch: dev
