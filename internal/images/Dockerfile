@@ -1,4 +1,4 @@
-FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 AS caged-build
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS caged-build
 
 ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/home/caged \
@@ -42,7 +42,7 @@ RUN npm install -g @github/copilot \
     && npm cache clean --force \
     && rm -rf /home/caged/.npm /home/caged/.cache/node-gyp /root/.npm /root/.cache/node-gyp
 
-FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/home/caged \
