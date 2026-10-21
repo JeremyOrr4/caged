@@ -399,6 +399,26 @@ func TestRunContainerStagesPiConfigSymlinksAndPersistsNewFiles(t *testing.T) {
 	}
 }
 
+func TestRunContainerRemovesStagedCopiesWhenSetupFails(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	root := filepath.Join(t.TempDir(), ".pi")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spec := plan.RunSpec{Image: "img", ConfigMounts: []plan.ConfigMount{
+		{Agent: "pi", Root: root, HostPath: root, DestPath: "/home/caged/.pi", Writable: true, MaskFiles: []string{"sock"}},
+		{HostPath: "/h/.x", DestPath: "/home/caged/.x", MaskFiles: []string{"sock"}},
+	}}
+	client := NewClient(&fakeExecutor{}, &fakeFS{mkdirErr: errors.New("boom")}, linux, system.Stdio{})
+	if err := client.RunContainer(context.Background(), spec); err == nil {
+		t.Fatal("RunContainer() succeeded, want the mask error")
+	}
+	if entries, err := os.ReadDir(tmp); err != nil || len(entries) != 0 {
+		t.Fatalf("temp dir after a failed setup = %v (err %v), want the staged copies removed", entries, err)
+	}
+}
+
 func TestRunContainerErrors(t *testing.T) {
 	t.Parallel()
 

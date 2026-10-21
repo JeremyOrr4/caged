@@ -324,8 +324,9 @@ func (r *resolution) mountPiTree(o owner, root, dest string, depth int, via stri
 		r.refuse(root, "cannot inspect config tree safely")
 		return
 	}
-	r.addMount(o, root, dest, masks, via)
-	r.report.Mounts[len(r.report.Mounts)-1].MaskFiles = maskFiles
+	if r.addMount(o, root, dest, masks, via) {
+		r.report.Mounts[len(r.report.Mounts)-1].MaskFiles = maskFiles
+	}
 	for _, link := range links {
 		if linkDest, ok := r.below(root, link, dest); ok {
 			r.followLink(o, root, link, linkDest, depth)
@@ -417,10 +418,11 @@ func (r *resolution) below(root, hostPath, dest string) (string, bool) {
 
 // addMount records a mount of hostPath at dest, a container path, unless the
 // same host path is already mounted there. link is the symlink it follows.
-func (r *resolution) addMount(o owner, hostPath, dest string, masks []string, link string) {
+// It reports whether it added the mount.
+func (r *resolution) addMount(o owner, hostPath, dest string, masks []string, link string) bool {
 	key := hostPath + "\x00" + dest
 	if _, ok := r.seen[key]; ok {
-		return
+		return false
 	}
 	r.seen[key] = struct{}{}
 	r.report.Mounts = append(r.report.Mounts, plan.ConfigMount{
@@ -433,6 +435,7 @@ func (r *resolution) addMount(o owner, hostPath, dest string, masks []string, li
 		MaskPaths: masks,
 		Link:      link,
 	})
+	return true
 }
 
 // dropNestedLinkMounts refuses symlink mounts whose destination lies inside

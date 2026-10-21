@@ -270,12 +270,12 @@ func (c *Client) RunContainer(ctx context.Context, spec plan.RunSpec) error {
 	if hasConfigFileMasks(spec.ConfigMounts) {
 		dir, err := c.fs.MkdirTemp("", "caged-run-masks-")
 		if err != nil {
-			return fmt.Errorf("create config mask source: %w", err)
+			return errors.Join(fmt.Errorf("create config mask source: %w", err), cleanupStage())
 		}
 		defer func() { _ = c.fs.RemoveAll(dir) }()
 		maskSource = filepath.Join(dir, "empty-file")
 		if err := c.fs.WriteFile(maskSource, nil, 0o600); err != nil {
-			return fmt.Errorf("create config mask file: %w", err)
+			return errors.Join(fmt.Errorf("create config mask file: %w", err), cleanupStage())
 		}
 	}
 	var stderr bytes.Buffer

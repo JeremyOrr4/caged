@@ -392,7 +392,7 @@ func syncSafeTree(staged, source string, masks, children []string, baseline map[
 		if withinAny(name, masks) || withinAny(name, children) || stageNames[name] {
 			continue
 		}
-		if err := removeBaselineEntry(filepath.Join(source, name), name, baseline); err != nil {
+		if err := removeBaselineEntry(filepath.Join(source, name), childPath(rel, name), baseline); err != nil {
 			return err
 		}
 	}
@@ -406,10 +406,7 @@ func syncSafeTree(staged, source string, masks, children []string, baseline map[
 		if err != nil || stageEntry.Mode()&fs.ModeSymlink != 0 {
 			continue
 		}
-		childRel := filepath.ToSlash(filepath.Join(filepath.FromSlash(rel), name))
-		if rel == "." {
-			childRel = name
-		}
+		childRel := childPath(rel, name)
 		if stageEntry.IsDir() {
 			if err := syncSafeTree(from, to, stripPrefixLists(masks, name), stripPrefixLists(children, name), baseline, childRel); err != nil {
 				return err
@@ -421,6 +418,15 @@ func syncSafeTree(staged, source string, masks, children []string, baseline map[
 		}
 	}
 	return nil
+}
+
+// childPath is the slash path of name inside the tree directory rel, the key
+// of the baseline; "." is the root of the tree.
+func childPath(rel, name string) string {
+	if rel == "." {
+		return name
+	}
+	return filepath.ToSlash(filepath.Join(filepath.FromSlash(rel), name))
 }
 
 func removeBaselineEntry(path, rel string, baseline map[string]piFileState) error {

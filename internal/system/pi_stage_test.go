@@ -111,3 +111,39 @@ func TestStagePiMountsDoesNotOverwriteConcurrentHostChange(t *testing.T) {
 		t.Fatalf("host's concurrent edit = %q, %v", got, err)
 	}
 }
+
+func TestStagePiMountsWritesNestedDeletionsBack(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".pi")
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for file, content := range map[string]string{"sub/c.json": "gone", "sub/keep.json": "keep", "c.json": "top-level namesake"} {
+		if err := os.WriteFile(filepath.Join(root, file), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mounts := []PiConfigMount{{Root: root, HostPath: root, DestPath: "/home/caged/.pi", MaskFiles: []string{"agent/blocked-link"}}}
+	staged, cleanup, persist, err := StagePiMounts(mounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup staging directory: %v", err)
+		}
+	})
+	if err := os.Remove(filepath.Join(staged[0].HostPath, "sub", "c.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := persist(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "sub", "c.json")); !os.IsNotExist(err) {
+		t.Fatalf("sub/c.json was deleted in the container but is still on the host (err %v)", err)
+	}
+	for file, want := range map[string]string{"sub/keep.json": "keep", "c.json": "top-level namesake"} {
+		if got, err := os.ReadFile(filepath.Join(root, file)); err != nil || string(got) != want {
+			t.Fatalf("%s = %q, %v; want it untouched", file, got, err)
+		}
+	}
+}

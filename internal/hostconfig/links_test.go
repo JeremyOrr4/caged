@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JeremyOrr4/caged/internal/agent"
 	"github.com/JeremyOrr4/caged/internal/plan"
+	"github.com/JeremyOrr4/caged/internal/system"
 )
 
 const wantHintPrefix = `add "- path: `
@@ -426,5 +428,21 @@ func TestMoreThanSixtyFourLinksAreNotFollowed(t *testing.T) {
 	}
 	if len(over) != 1 || len(report.Refused) != 1 {
 		t.Fatalf("Refused = %v, want exactly one over-budget refusal", refusedStrings(report.Refused))
+	}
+}
+
+func TestResolvePiTreeListedTwiceKeepsMaskFilesOnTheRoot(t *testing.T) {
+	home, _ := testHome(t, []string{".st"}, []string{".st/a.json"})
+	if err := os.Symlink("a.json", filepath.Join(home, ".st", "filelink")); err != nil {
+		t.Fatal(err)
+	}
+	path := agent.ConfigPath{HostPath: ".st", ContainerPath: ".st", Writable: true}
+	agents := []agent.Agent{{Name: "pi", Command: []string{"pi"}, ConfigPaths: []agent.ConfigPath{path, path}}}
+	report, err := NewResolver(system.FS{}, fakeEnv{}, agents, nil, policies{}).Resolve(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Mounts) != 2 || len(report.Mounts[0].MaskFiles) != 1 || len(report.Mounts[1].MaskFiles) != 0 {
+		t.Fatalf("Mounts = %+v, want the root with one mask file and the link target with none", report.Mounts)
 	}
 }
