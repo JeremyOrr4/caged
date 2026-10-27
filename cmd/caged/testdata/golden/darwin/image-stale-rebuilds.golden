@@ -6,6 +6,7 @@ leftover temp entries: 0
 fake docker build output
 fake docker run output
 === stderr
+caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 WARNING: allowlisted agent credentials are available inside the container.
 Runtime image caged-runtime:latest was built by caged 0.0.1; rebuilding it for caged test (this can take a few minutes)...
 === docker invocations
@@ -75,6 +76,8 @@ $ROOT/home/.config/gh:/home/caged/.config/gh
 $ROOT/home/.pi:/home/caged/.pi
 -v
 $ROOT/home/.gitconfig:/home/caged/.gitconfig:ro
+-v
+$ROOT/home/.config/caged:/home/caged/.config/caged
 -e
 CAGED_RETURN_TO_SHELL=1
 caged-runtime:latest

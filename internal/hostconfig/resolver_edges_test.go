@@ -10,8 +10,10 @@ import (
 	"testing"
 
 	"github.com/JeremyOrr4/caged/internal/agent"
+	"github.com/JeremyOrr4/caged/internal/pathpolicy"
 	"github.com/JeremyOrr4/caged/internal/plan"
 	"github.com/JeremyOrr4/caged/internal/system"
+	"github.com/JeremyOrr4/caged/internal/testkit"
 )
 
 // faultyFS is the real filesystem with selected calls failing.
@@ -53,6 +55,24 @@ func (f faultyFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	return f.FS.ReadDir(name)
 }
 
+// WalkDir walks like filepath.WalkDir, which reads directories itself: a
+// directory in readDirErr gets the second call, with the error, that
+// filepath.WalkDir makes for a directory it cannot read, and is not entered.
+func (f faultyFS) WalkDir(root string, fn fs.WalkDirFunc) error {
+	return f.FS.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || !entry.IsDir() || !f.readDirErr[path] {
+			return fn(path, entry, err)
+		}
+		if err := fn(path, entry, nil); err != nil {
+			return err
+		}
+		if err := fn(path, entry, errInjected); err != nil {
+			return err
+		}
+		return filepath.SkipDir
+	})
+}
+
 // testHome creates a home directory and returns it with its resolved path
 // (they differ on macOS, where temp dirs live behind the /var -> /private/var symlink).
 func testHome(t *testing.T, dirs, files []string) (string, string) {
@@ -79,7 +99,7 @@ func TestResolveRefusesUnresolvableHome(t *testing.T) {
 	t.Parallel()
 
 	fsys := faultyFS{evalErr: map[string]bool{"/no/such/home": true}}
-	got, err := NewResolver(fsys, fakeEnv{}, agent.Builtin().All(), DefaultSharedFiles(), policies{}).Resolve("/no/such/home/")
+	got, err := NewResolver(Deps{FS: fsys, Env: testkit.Env{}, Agents: agent.Builtin().All(), Shared: DefaultSharedFiles(), Policies: policies{}}).Resolve("/no/such/home/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +122,7 @@ func TestResolveReportsMissingPathsInRegistryOrder(t *testing.T) {
 		agents = append(agents, definition)
 	}
 	home, _ := testHome(t, nil, nil)
-	report, err := NewResolver(system.FS{}, fakeEnv{}, agents, DefaultSharedFiles(), policies{}).Resolve(home)
+	report, err := NewResolver(Deps{FS: system.FS{}, Env: testkit.Env{}, Agents: agents, Shared: DefaultSharedFiles(), Policies: policies{}}).Resolve(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +139,7 @@ func TestResolveHonorsOverrides(t *testing.T) {
 	t.Parallel()
 
 	home, resolvedHome := testHome(t, []string{"alt-codex", "abs-copilot", ".claude"}, nil)
-	report := resolveConfigs(t, home, fakeEnv{
+	report := resolveConfigs(t, home, map[string]string{
 		"CODEX_HOME":        "alt-codex",                        // relative to home
 		"COPILOT_HOME":      filepath.Join(home, "abs-copilot"), // absolute
 		"CLAUDE_CONFIG_DIR": "",                                 // empty means "use the default"
@@ -144,7 +164,7 @@ func TestResolveRefusesUnresolvableConfigPath(t *testing.T) {
 	home, _ := testHome(t, []string{".gemini"}, nil)
 	gemini := filepath.Join(home, ".gemini")
 	fsys := faultyFS{evalErr: map[string]bool{gemini: true}}
-	report, err := NewResolver(fsys, fakeEnv{}, agent.Builtin().All(), nil, policies{}).Resolve(home)
+	report, err := NewResolver(Deps{FS: fsys, Env: testkit.Env{}, Agents: agent.Builtin().All(), Policies: policies{}}).Resolve(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +185,7 @@ func TestResolveReportsUninspectableEntries(t *testing.T) {
 		readDirErr: map[string]bool{filepath.Join(gemini, "sub"): true},
 		lstatErr:   map[string]bool{filepath.Join(gemini, "b.json"): true},
 	}
-	report, err := NewResolver(fsys, fakeEnv{}, agent.Builtin().All(), nil, policies{}).Resolve(home)
+	report, err := NewResolver(Deps{FS: fsys, Env: testkit.Env{}, Agents: agent.Builtin().All(), Policies: policies{}}).Resolve(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +217,7 @@ func TestResolveMountsSingleFileConfigAndRejectsBadMasks(t *testing.T) {
 		{Name: "escape", Command: []string{"escape"}, ConfigPaths: []agent.ConfigPath{{HostPath: "masked", ContainerPath: "masked", MaskPaths: []string{"../outside"}}}},
 		{Name: "notdir", Command: []string{"notdir"}, ConfigPaths: []agent.ConfigPath{{HostPath: "masked-file", ContainerPath: "masked-file", MaskPaths: []string{"tmp"}}}},
 	}
-	report, err := NewResolver(system.FS{}, fakeEnv{}, agents, nil, policies{}).Resolve(home)
+	report, err := NewResolver(Deps{FS: system.FS{}, Env: testkit.Env{}, Agents: agents, Policies: policies{}}).Resolve(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +243,7 @@ func TestResolveReportsUnreadableMaskedLink(t *testing.T) {
 	}
 	link := filepath.Join(resolvedHome, ".codex", "AGENTS.md")
 	fsys := faultyFS{readlinkErr: map[string]bool{link: true}}
-	report, err := NewResolver(fsys, fakeEnv{}, agent.Builtin().All(), nil, policies{}).Resolve(home)
+	report, err := NewResolver(Deps{FS: fsys, Env: testkit.Env{}, Agents: agent.Builtin().All(), Policies: policies{}}).Resolve(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +264,7 @@ func TestResolveDeduplicatesSharedConfigPaths(t *testing.T) {
 		{Name: "one", Command: []string{"one"}, ConfigPaths: []agent.ConfigPath{path}},
 		{Name: "two", Command: []string{"two"}, ConfigPaths: []agent.ConfigPath{path}},
 	}
-	report, err := NewResolver(system.FS{}, fakeEnv{}, agents, nil, policies{}).Resolve(home)
+	report, err := NewResolver(Deps{FS: system.FS{}, Env: testkit.Env{}, Agents: agents, Policies: policies{}}).Resolve(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +276,7 @@ func TestResolveDeduplicatesSharedConfigPaths(t *testing.T) {
 func TestSharedFilesAreData(t *testing.T) {
 	t.Parallel()
 
-	if got, want := DefaultSharedFiles(), []SharedFile{{Path: ".gitconfig", Description: "shared git config"}}; !reflect.DeepEqual(got, want) {
+	if got, want := DefaultSharedFiles(), []SharedFile{{path: ".gitconfig", description: "shared git config"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("DefaultSharedFiles() = %v, want %v", got, want)
 	}
 
@@ -269,16 +289,16 @@ func TestSharedFilesAreData(t *testing.T) {
 		t.Fatal(err)
 	}
 	shared := []SharedFile{
-		{Path: ".npmrc", Description: "shared npm config"},
-		{Path: ".npmrc-dir", Description: "shared npm config"},
-		{Path: ".escape", Description: "shared escape"},
-		{Path: ".absent", Description: "shared absent"},
+		{path: ".npmrc", description: "shared npm config"},
+		{path: ".npmrc-dir", description: "shared npm config"},
+		{path: ".escape", description: "shared escape"},
+		{path: ".absent", description: "shared absent"},
 	}
-	report, err := NewResolver(system.FS{}, fakeEnv{}, nil, shared, policies{}).Resolve(home)
+	report, err := NewResolver(Deps{FS: system.FS{}, Env: testkit.Env{}, Shared: shared, Policies: policies{}}).Resolve(home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantMounts := []plan.ConfigMount{{Agent: SharedOwner, Name: ".npmrc", HostPath: filepath.Join(resolvedHome, ".npmrc"), DestPath: "/home/caged/.npmrc", Root: filepath.Join(home, ".npmrc")}}
+	wantMounts := []plan.ConfigMount{{Agent: plan.SharedOwner, Name: ".npmrc", HostPath: filepath.Join(resolvedHome, ".npmrc"), DestPath: "/home/caged/.npmrc", Root: filepath.Join(home, ".npmrc")}}
 	if !reflect.DeepEqual(report.Mounts, wantMounts) {
 		t.Fatalf("Mounts = %+v, want %+v", report.Mounts, wantMounts)
 	}
@@ -299,24 +319,8 @@ func TestSharedFilesAreData(t *testing.T) {
 	}
 }
 
-func TestIsWithin(t *testing.T) {
+func TestContainerHomeUsesSlashes(t *testing.T) {
 	t.Parallel()
-
-	for _, tt := range []struct {
-		path, root string
-		want       bool
-	}{
-		{"/Users/me", "/Users/me", true},
-		{"/Users/me/.codex", "/Users/me", true},
-		{"/Users/me/../other", "/Users/me", false},
-		{"/Users/meow", "/Users/me", false},
-		{"/Users", "/Users/me", false},
-		{"/Users/me/..hidden", "/Users/me", true},
-	} {
-		if got := isWithin(tt.path, tt.root); got != tt.want {
-			t.Errorf("isWithin(%q, %q) = %v, want %v", tt.path, tt.root, got, tt.want)
-		}
-	}
 	if strings.Contains(containerHome, "\\") {
 		t.Fatal("container paths must use forward slashes")
 	}
@@ -335,8 +339,34 @@ func TestNoAgentUsesTheSharedOwnerName(t *testing.T) {
 	t.Parallel()
 
 	for _, name := range agent.Builtin().Names() {
-		if name == SharedOwner {
-			t.Errorf("agent %q collides with the shared config owner %q", name, SharedOwner)
+		if name == plan.SharedOwner {
+			t.Errorf("agent %q collides with the shared config owner %q", name, plan.SharedOwner)
+		}
+	}
+}
+
+// failingPolicies fails with err.
+type failingPolicies struct{ err error }
+
+func (f failingPolicies) LinkPolicy(string) (*pathpolicy.Policy, error) { return nil, f.err }
+
+func TestResolveReturnsLinkPolicyAndConfigDirErrors(t *testing.T) {
+	t.Parallel()
+	home, _ := testHome(t, []string{".claude"}, nil)
+	policyErr, dirErr := errors.New("bad config.yaml"), errors.New("no config dir")
+
+	for _, tt := range []struct {
+		name     string
+		resolver *Resolver
+		want     error
+	}{
+		{"link policy", NewResolver(Deps{FS: system.FS{}, Env: testkit.Env{}, Agents: agent.Builtin().All(), Policies: failingPolicies{policyErr}}), policyErr},
+		{"config dir", NewResolver(Deps{FS: system.FS{}, Env: testkit.Env{}, Agents: agent.Builtin().All(), Policies: policies{}, ConfigDirs: failingDirs{dirErr}}), dirErr},
+		{"state dir", NewResolver(Deps{FS: system.FS{}, Env: testkit.Env{}, Agents: agent.Builtin().All(), Policies: policies{}, ConfigDirs: failingStateDirs{filepath.Join(home, ".config", "caged"), dirErr}}), dirErr},
+	} {
+		report, err := tt.resolver.Resolve(home)
+		if err != tt.want || !reflect.DeepEqual(report, plan.ConfigReport{}) { //nolint:errorlint // asserts the error is returned unchanged, not wrapped
+			t.Errorf("%s: Resolve() = %+v, %v; want an empty report and %v", tt.name, report, err, tt.want)
 		}
 	}
 }

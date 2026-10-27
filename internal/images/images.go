@@ -3,10 +3,14 @@
 // Docker itself.
 package images
 
+// Repository is the image repository of every image caged builds, the one
+// caged clean searches for images older caged versions left behind.
+const Repository = "caged-runtime"
+
 // The tags of the images caged builds.
 const (
-	BaseRef      = "caged-runtime:latest"
-	ExtensionRef = "caged-runtime:ext"
+	BaseRef      = Repository + ":latest"
+	ExtensionRef = Repository + ":ext"
 )
 
 // Role says what an image is for.
@@ -21,12 +25,12 @@ const (
 // The labels caged writes on its images. They use a reverse-DNS prefix, as the
 // OCI and Docker conventions recommend for distributed software.
 const (
-	LabelPrefix        = "io.github.jeremyorr4.caged."
-	LabelRole          = LabelPrefix + "role"
-	LabelRuntimeHash   = LabelPrefix + "runtime-hash"
-	LabelExtensionHash = LabelPrefix + "extension-hash"
-	LabelBaseID        = LabelPrefix + "base-id"
-	LabelVersion       = LabelPrefix + "version"
+	labelPrefix        = "io.github.jeremyorr4.caged."
+	LabelRole          = labelPrefix + "role"
+	LabelRuntimeHash   = labelPrefix + "runtime-hash"
+	LabelExtensionHash = labelPrefix + "extension-hash"
+	LabelBaseID        = labelPrefix + "base-id"
+	LabelVersion       = labelPrefix + "version"
 )
 
 // VersionsPath is where the image build records the installed CLI versions.

@@ -62,6 +62,43 @@ func TestFSUsesTheRealFilesystem(t *testing.T) {
 	}
 }
 
+func TestFSCreatesAndRemovesDirectoriesAndFiles(t *testing.T) {
+	t.Parallel()
+
+	var fsys FS
+	root := t.TempDir()
+	nested := filepath.Join(root, "a", "b")
+	if err := fsys.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	single := filepath.Join(root, "c")
+	if err := fsys.Mkdir(single, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.Mkdir(single, 0o700); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("Mkdir(existing) = %v, want fs.ErrExist", err)
+	}
+	if err := fsys.Chmod(single, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(single); err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("Chmod left mode %v (err %v), want 0755", info.Mode().Perm(), err)
+	}
+	file := filepath.Join(nested, "f")
+	if err := fsys.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := fsys.ReadFile(file); err != nil || string(got) != "x" {
+		t.Fatalf("ReadFile() = %q, %v", got, err)
+	}
+	if err := fsys.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(file); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Remove() left %q behind: %v", file, err)
+	}
+}
+
 func TestEnvReadsTheProcessEnvironment(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -136,5 +173,41 @@ func TestCurrentPlatformAndStdioDescribeThisProcess(t *testing.T) {
 	}
 	if stderr, ok := stdio.Err.(*os.File); !ok || stderr != os.Stderr {
 		t.Fatal("CurrentStdio().Err is not os.Stderr")
+	}
+}
+
+func TestIsTerminalIsFalseForPipesFilesAndNonFiles(t *testing.T) {
+	t.Parallel()
+
+	if IsTerminal(bytes.NewReader(nil)) {
+		t.Error("IsTerminal(bytes.Reader) = true")
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
+	if IsTerminal(reader) {
+		t.Error("IsTerminal(pipe) = true")
+	}
+	file, err := os.Open(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	if IsTerminal(file) {
+		t.Error("IsTerminal(regular file) = true")
+	}
+}
+
+// TestFoldsCaseIsTrueOnMacOSOnly: macOS's default file systems ignore case
+// in names; Linux's do not (W7-T8, bugs.md Q-WB-7).
+func TestFoldsCaseIsTrueOnMacOSOnly(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]bool{"darwin": true, "linux": false} {
+		if got := (Platform{OS: name, Arch: "arm64"}).FoldsCase(); got != want {
+			t.Errorf("Platform{OS: %q}.FoldsCase() = %v, want %v", name, got, want)
+		}
 	}
 }

@@ -6,6 +6,7 @@ leftover temp entries: 0
 fake docker build output
 built runtime image caged-runtime:latest
 === stderr
+caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 === docker invocations
 info
 --format

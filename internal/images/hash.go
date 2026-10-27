@@ -1,9 +1,10 @@
 package images
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
-	"sort"
+	"slices"
 	"strconv"
 
 	"github.com/JeremyOrr4/caged/internal/plan"
@@ -14,8 +15,8 @@ import (
 // each followed by a NUL byte. It covers names, modes, and bytes, and does
 // not depend on the order of files.
 func ContextHash(files []plan.File) string {
-	sorted := append([]plan.File(nil), files...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	sorted := slices.Clone(files)
+	slices.SortFunc(sorted, func(a, b plan.File) int { return cmp.Compare(a.Name, b.Name) })
 	sum := sha256.New()
 	sum.Write([]byte("caged-context/v1\x00"))
 	for _, file := range sorted {

@@ -9,12 +9,6 @@ import (
 	"github.com/JeremyOrr4/caged/internal/system"
 )
 
-// exitError stands in for *exec.ExitError: it carries an exit code.
-type exitError struct{ code int }
-
-func (e exitError) Error() string { return "exit status 125" }
-func (e exitError) ExitCode() int { return e.code }
-
 func TestClassifyRunError(t *testing.T) {
 	t.Parallel()
 
@@ -54,7 +48,7 @@ func TestClassifyRunError(t *testing.T) {
 			original := exitError{code: 125}
 			got := classifyRunError(tt.platform, plan.RunSpec{Ports: tt.ports}, tt.stderr, original)
 			if tt.want == "" {
-				if got != error(original) {
+				if got != error(original) { //nolint:errorlint // asserts the error is returned unchanged, not wrapped
 					t.Fatalf("classifyRunError() = %v, want the original error", got)
 				}
 				return

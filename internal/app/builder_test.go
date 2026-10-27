@@ -16,7 +16,7 @@ func TestBuilderBuild(t *testing.T) {
 	t.Parallel()
 
 	boom := errors.New("build failed")
-	loadErr := errors.New("~/.config/caged/image.json: invalid JSON at line 1")
+	loadErr := errors.New("~/.config/caged/config.yaml: line 1: did not find expected node content")
 	daemonErr := &engine.Error{Kind: engine.KindNotInstalled, Message: "Docker is not installed"}
 	runtimeImage := BuiltImage{Role: images.RoleRuntime, Ref: images.BaseRef}
 	extImage := BuiltImage{Role: images.RoleExtension, Ref: images.ExtensionRef, Summary: "apt: neovim, tmux"}
@@ -50,7 +50,7 @@ func TestBuilderBuild(t *testing.T) {
 			exts.calls = &calls
 			builder := NewBuilder(&exts, &fakeDaemon{calls: &calls, err: tt.daemonErr}, NewImageEnsurer(store, "test"), io.Discard)
 			got, err := builder.Build(context.Background(), tt.opts)
-			if err != tt.wantErr {
+			if err != tt.wantErr { //nolint:errorlint // asserts the error is returned unchanged, not wrapped
 				t.Fatalf("Build() error = %v, want %v", err, tt.wantErr)
 			}
 			if !reflect.DeepEqual(got, tt.want) {

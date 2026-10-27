@@ -4,16 +4,14 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
-	"github.com/JeremyOrr4/caged/internal/engine"
 	"github.com/JeremyOrr4/caged/internal/images"
-	"github.com/JeremyOrr4/caged/internal/plan"
 )
 
-// check is one row of `caged doctor`. A check whose needs ended in FAIL or SKIP
-// is skipped without running.
+// check is one row of `caged doctor`. A check whose needs failed, were
+// skipped, or have not run yet is skipped without running.
 type check struct {
 	name  string
 	needs []string
@@ -33,80 +31,6 @@ func (d *Doctor) checks() []check {
 		{name: "project", needs: []string{"daemon", "config"}, run: d.checkProject},
 		{name: "versions", needs: []string{"daemon"}, run: checkVersions},
 	}
-}
-
-// facts caches what the checks look up, so each docker question is asked once
-// however many checks need the answer.
-type facts struct {
-	doctor *Doctor
-	opts   DoctorOptions
-
-	daemonDone bool
-	daemonInfo engine.DaemonInfo
-	daemonErr  error
-
-	extDone bool
-	ext     *plan.Extension
-	extErr  error
-
-	inspected map[string]inspection
-}
-
-// inspection is the cached answer to InspectImage for one reference.
-type inspection struct {
-	info  engine.ImageInfo
-	found bool
-	err   error // a failure other than "not found"
-}
-
-func (f *facts) daemon(ctx context.Context) (engine.DaemonInfo, error) {
-	if !f.daemonDone {
-		f.daemonDone = true
-		f.daemonInfo, f.daemonErr = f.doctor.deps.Daemon.Daemon(ctx)
-	}
-	return f.daemonInfo, f.daemonErr
-}
-
-func (f *facts) extension() (*plan.Extension, error) {
-	if !f.extDone {
-		f.extDone = true
-		f.ext, f.extErr = f.doctor.deps.Extensions.Load()
-	}
-	return f.ext, f.extErr
-}
-
-func (f *facts) image(ctx context.Context, ref string) inspection {
-	if got, ok := f.inspected[ref]; ok {
-		return got
-	}
-	var result inspection
-	info, err := f.doctor.deps.Store.InspectImage(ctx, ref)
-	switch {
-	case err == nil:
-		result = inspection{info: info, found: true}
-	case engine.IsKind(err, engine.KindImageNotFound):
-		result = inspection{}
-	default:
-		result = inspection{err: err}
-	}
-	if f.inspected == nil {
-		f.inspected = map[string]inspection{}
-	}
-	f.inspected[ref] = result
-	return result
-}
-
-// runImage is the image a run would use: the extension image when an extension
-// is configured and built, else the runtime image. found is false when that
-// image does not exist yet.
-func (f *facts) runImage(ctx context.Context) (ref string, info engine.ImageInfo, found bool) {
-	if ext, err := f.extension(); err == nil && ext != nil {
-		if built := f.image(ctx, images.ExtensionRef); built.found {
-			return images.ExtensionRef, built.info, true
-		}
-	}
-	base := f.image(ctx, images.BaseRef)
-	return images.BaseRef, base.info, base.found
 }
 
 func checkDocker(ctx context.Context, f *facts) Result {
@@ -189,6 +113,9 @@ func (d *Doctor) checkConfig(_ context.Context, f *facts) Result {
 		if status.Workdirs {
 			parts = append(parts, fmt.Sprintf("workdirs.allow: %d", status.WorkdirAllow))
 		}
+		if status.Created {
+			parts = append(parts, "starter file created just now")
+		}
 		detail = status.Source + " (" + strings.Join(parts, "; ") + ")"
 	}
 	if status.Legacy != "" {
@@ -197,10 +124,10 @@ func (d *Doctor) checkConfig(_ context.Context, f *facts) Result {
 	return Result{Status: StatusPass, Detail: detail}
 }
 
-func (d *Doctor) checkLinks(_ context.Context, _ *facts) Result {
-	home, err := d.deps.Env.UserHomeDir()
+func (d *Doctor) checkLinks(_ context.Context, f *facts) Result {
+	home, err := f.home.get()
 	if err != nil {
-		return Result{Status: StatusFail, Detail: fmt.Sprintf("find home directory: %v", err)}
+		return Result{Status: StatusFail, Detail: err.Error()}
 	}
 	report, err := d.deps.Configs.Resolve(home)
 	if err != nil {
@@ -228,7 +155,7 @@ func (d *Doctor) checkLinks(_ context.Context, _ *facts) Result {
 }
 
 func (d *Doctor) checkExtensionImage(ctx context.Context, f *facts) Result {
-	ext, _ := f.extension()
+	ext, _ := f.extension() // cannot fail: this check needs config, which fails when the extension does
 	built := f.image(ctx, images.ExtensionRef)
 	if built.err != nil {
 		return Result{Status: StatusWarn, Detail: fmt.Sprintf("could not inspect %s: %v", images.ExtensionRef, built.err)}
@@ -251,7 +178,7 @@ func (d *Doctor) checkExtensionImage(ctx context.Context, f *facts) Result {
 }
 
 func checkArch(ctx context.Context, f *facts) Result {
-	info, _ := f.daemon(ctx)
+	info, _ := f.daemon(ctx) // cannot fail: this check needs daemon, which fails when the daemon does
 	_, image, found := f.runImage(ctx)
 	if !found {
 		return Result{Status: StatusSkip, Detail: "no image built yet"}
@@ -271,9 +198,9 @@ func (d *Doctor) checkProject(ctx context.Context, f *facts) Result {
 		}
 		workDir = cwd
 	}
-	home, err := d.deps.Env.UserHomeDir()
+	home, err := f.home.get()
 	if err != nil {
-		return Result{Status: StatusFail, Detail: fmt.Sprintf("find home directory: %v", err)}
+		return Result{Status: StatusFail, Detail: err.Error()}
 	}
 	// Resolve with broad mounts allowed, so that the only errors left are real
 	// problems with the directory; broad mounts are reported as a warning.
@@ -317,12 +244,12 @@ func checkVersions(ctx context.Context, f *facts) Result {
 // entries sorted by name.
 func parseVersions(text string) []string {
 	var entries []string
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		name, version, found := strings.Cut(strings.TrimSpace(line), "=")
 		if found && name != "" {
 			entries = append(entries, name+" "+version)
 		}
 	}
-	sort.Strings(entries)
+	slices.Sort(entries)
 	return entries
 }

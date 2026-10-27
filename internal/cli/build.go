@@ -8,14 +8,14 @@ import (
 )
 
 func newBuildCmd(service BuildService) *cobra.Command {
-	var noCache bool
+	var noCache, trustConfig bool
 	cmd := &cobra.Command{
 		Use:          "build",
 		Short:        "Build the runtime image",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			built, err := service.Build(cmd.Context(), app.BuildOptions{NoCache: noCache})
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			built, err := service.Build(cmd.Context(), app.BuildOptions{NoCache: noCache, TrustConfig: trustConfig})
 			if err != nil {
 				return err
 			}
@@ -24,13 +24,14 @@ func newBuildCmd(service BuildService) *cobra.Command {
 				if image.Summary != "" {
 					line += " (" + image.Summary + ")"
 				}
-				if _, err := fmt.Fprintln(cmd.OutOrStdout(), line); err != nil {
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), app.PrintableLine(line)); err != nil {
 					return err
 				}
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&trustConfig, "trust-config", false, "approve a changed config.yaml without asking (for scripts)")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "build without using the Docker cache")
 	return cmd
 }

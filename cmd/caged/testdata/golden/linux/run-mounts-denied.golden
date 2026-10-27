@@ -5,6 +5,7 @@ leftover temp entries: 0
 === stdout
 fake docker run output
 === stderr
+caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 WARNING: allowlisted agent credentials are available inside the container.
 docker: Error response from daemon: Mounts denied: the path is not shared from the host.
 exit status 125
@@ -52,6 +53,8 @@ $ROOT/home/.config/gh:/home/caged/.config/gh
 $ROOT/home/.pi:/home/caged/.pi
 -v
 $ROOT/home/.gitconfig:/home/caged/.gitconfig:ro
+-v
+$ROOT/home/.config/caged:/home/caged/.config/caged
 --user
 $UID:$GID
 -e

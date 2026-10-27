@@ -23,58 +23,53 @@ func NewImageEnsurer(store ImageStore, version string) *ImageEnsurer {
 	return &ImageEnsurer{store: store, version: version}
 }
 
-// Ensure builds the runtime image, and the extension image on top of it when
-// ext is not nil, whenever either is missing or out of date. It returns the
-// image reference to run. A failed build is returned; a stale image is never
-// used instead.
-func (e *ImageEnsurer) Ensure(ctx context.Context, ext *plan.Extension, rep *Reporter) (string, error) {
-	base := images.Base(e.version)
-	baseID, baseReplaced, err := e.ensure(ctx, base, false, plan.BuildOptions{}, rep)
+// ensureImages builds the runtime image, and the extension image on top of it when
+// ext is not nil, whenever either is missing or out of date. A failed build is
+// returned; a stale image is never used instead. The image to run is
+// images.RefFor(ext).
+func (e *ImageEnsurer) ensureImages(ctx context.Context, ext *plan.Extension, rep *Reporter) error {
+	return e.refresh(ctx, ext, false, plan.BuildOptions{}, rep)
+}
+
+// rebuildImages rebuilds the runtime image, and the extension image when ext is not
+// nil, whatever their state, and returns what it built.
+func (e *ImageEnsurer) rebuildImages(ctx context.Context, ext *plan.Extension, opts BuildOptions, rep *Reporter) ([]BuiltImage, error) {
+	if err := e.refresh(ctx, ext, true, plan.BuildOptions{NoCache: opts.NoCache}, rep); err != nil {
+		return nil, err
+	}
+	built := []BuiltImage{{Role: images.RoleRuntime, Ref: images.BaseRef}}
+	if ext != nil {
+		built = append(built, BuiltImage{Role: images.RoleExtension, Ref: images.ExtensionRef, Summary: "apt: " + strings.Join(ext.Apt, ", ")})
+	}
+	return built, nil
+}
+
+// refresh brings the runtime image, and the extension image when ext is not
+// nil, up to date (or rebuilds them when force is set), then removes the
+// images the builds replaced.
+func (e *ImageEnsurer) refresh(ctx context.Context, ext *plan.Extension, force bool, opts plan.BuildOptions, rep *Reporter) error {
+	baseID, baseReplaced, err := e.ensureTarget(ctx, images.Base(e.version), force, opts, rep)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if ext == nil {
 		e.cleanup(ctx, rep, baseReplaced)
-		return base.Ref, nil
+		return nil
 	}
-	extension := images.Extension(*ext, baseID, e.version)
-	_, extReplaced, err := e.ensure(ctx, extension, false, plan.BuildOptions{}, rep)
+	_, extReplaced, err := e.ensureTarget(ctx, images.Extension(*ext, baseID, e.version), force, opts, rep)
 	if err != nil {
-		return "", err
+		return err
 	}
 	// The extension goes first: a base image cannot be removed while the old
 	// extension image still builds on it.
 	e.cleanup(ctx, rep, extReplaced, baseReplaced)
-	return extension.Ref, nil
+	return nil
 }
 
-// BuildAll rebuilds the runtime image, and the extension image when ext is not
-// nil, whatever their state, and returns what it built.
-func (e *ImageEnsurer) BuildAll(ctx context.Context, ext *plan.Extension, opts BuildOptions, rep *Reporter) ([]BuiltImage, error) {
-	buildOpts := plan.BuildOptions{NoCache: opts.NoCache}
-	base := images.Base(e.version)
-	baseID, baseReplaced, err := e.ensure(ctx, base, true, buildOpts, rep)
-	if err != nil {
-		return nil, err
-	}
-	built := []BuiltImage{{Role: base.Role, Ref: base.Ref}}
-	if ext == nil {
-		e.cleanup(ctx, rep, baseReplaced)
-		return built, nil
-	}
-	extension := images.Extension(*ext, baseID, e.version)
-	_, extReplaced, err := e.ensure(ctx, extension, true, buildOpts, rep)
-	if err != nil {
-		return nil, err
-	}
-	e.cleanup(ctx, rep, extReplaced, baseReplaced)
-	return append(built, BuiltImage{Role: extension.Role, Ref: extension.Ref, Summary: "apt: " + strings.Join(ext.Apt, ", ")}), nil
-}
-
-// ensure looks at the image with the target's tag and builds it unless it is
+// ensureTarget looks at the image with the target's tag and builds it unless it is
 // current (or force is set). It returns the ID of the image to use, and the ID
 // of the image the build replaced, or "" when nothing was replaced.
-func (e *ImageEnsurer) ensure(ctx context.Context, t images.Target, force bool, opts plan.BuildOptions, rep *Reporter) (id, replaced string, err error) {
+func (e *ImageEnsurer) ensureTarget(ctx context.Context, t images.Target, force bool, opts plan.BuildOptions, rep *Reporter) (id, replaced string, err error) {
 	info, err := e.store.InspectImage(ctx, t.Ref)
 	found := err == nil
 	if err != nil && !engine.IsKind(err, engine.KindImageNotFound) {
@@ -82,7 +77,7 @@ func (e *ImageEnsurer) ensure(ctx context.Context, t images.Target, force bool, 
 	}
 	freshness := t.Assess(info.Labels, found)
 	if !force && freshness.State == images.StateCurrent {
-		rep.Detail("image: %s", t.Describe())
+		rep.detail("image: %s", t.Describe())
 		return info.ID, "", nil
 	}
 	if !force {
@@ -115,7 +110,7 @@ func (e *ImageEnsurer) cleanup(ctx context.Context, rep *Reporter, replaced ...s
 		if errors.As(err, &engineErr) && engineErr.Kind == engine.KindImageInUse {
 			reason = engineErr.Message
 		}
-		rep.Detail("image: kept old image %s (%s)", shortID(id), reason)
+		rep.detail("image: kept old image %s (%s)", shortID(id), reason)
 	}
 }
 

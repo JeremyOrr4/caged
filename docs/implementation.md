@@ -11,9 +11,14 @@ Go executable and built locally on first launch.
   registered launch style.
 - After an agent exits, the container entrypoint opens an interactive shell.
 - Existing allowlisted CLI config paths are mounted read-write; shared
-  `.gitconfig` is read-only. Absent paths are skipped. Config roots outside the home
-  directory and unsafe symlinks are refused. Special files are excluded or
-  masked so they are never passed into the container.
+  `.gitconfig` is read-only. Absent paths are skipped. Agent config roots outside the home
+  directory and unsafe symlinks are refused; a root reached through a symlink
+  under `links.allow` may resolve outside home, and caged's own config folder
+  may live outside home. Special files are never mounted: they are left out of
+  the mount or masked, and a Codex home with one outside its masks is refused.
+- Pi's config, when it needs masks or nested link mounts, runs from a
+  symlink-free copy; after the container exits, its changes are written back to
+  the host and the copy is removed.
 - Codex's home is one directory mount so config updates can use atomic file
   replacement. Container tmpfs mounts hide its host daemon, socket, and runtime
   executable symlink directories.
@@ -37,9 +42,10 @@ make vet
 
 The development image is `dev/Dockerfile`; the runtime Dockerfile and entrypoint
 under `internal/images/` are embedded in the binary. Command-line parsing,
-agent data, host-config resolution, project validation, run planning, Docker
-execution, and application coordination are separated into `internal/cli`,
-`internal/agent`, `internal/hostconfig`, `internal/project`, `internal/plan`,
-`internal/docker`, and `internal/app`. Only `internal/system` touches the
+agent data, the user's config file, host-config resolution, project validation,
+run planning, config staging, Docker execution, and application coordination are
+separated into `internal/cli`, `internal/agent`, `internal/userconfig`,
+`internal/hostconfig`, `internal/project`, `internal/plan`,
+`internal/configstage`, `internal/docker`, and `internal/app`. Only `internal/system` touches the
 operating system, and `cmd/caged/main.go` wires everything together. See
 `docs/architecture.md` for the interfaces and the dependency rules.

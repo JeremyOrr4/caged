@@ -2,11 +2,12 @@ package plan
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
-// LoopbackIP is the only host address caged publishes ports on.
-const LoopbackIP = "127.0.0.1"
+// loopbackIP is the only host address caged publishes ports on.
+const loopbackIP = "127.0.0.1"
 
 // Port is one published container port: HostIP:HostPort on the host maps to
 // ContainerPort in the container, over TCP.
@@ -15,12 +16,12 @@ type Port struct {
 	HostPort, ContainerPort int
 }
 
-// maxPort is the highest valid port number.
-const maxPort = 65535
+// MaxPort is the highest valid port number.
+const MaxPort = 65535
 
 // ParsePorts parses the values of repeated -p flags. Each value is PORT or
 // HOST_PORT:CONTAINER_PORT, with decimal ports in 1-65535. Every port binds
-// to LoopbackIP. A host port may appear only once.
+// to 127.0.0.1. A host port may appear only once.
 func ParsePorts(values []string) ([]Port, error) {
 	var ports []Port
 	published := make(map[int]struct{}, len(values))
@@ -44,15 +45,13 @@ func ParsePorts(values []string) ([]Port, error) {
 func parsePort(value string) (Port, error) {
 	parts := strings.Split(value, ":")
 	if len(parts) > 2 {
-		return Port{}, fmt.Errorf("invalid port %q: a host address is not supported; caged always binds %s", value, LoopbackIP)
+		return Port{}, fmt.Errorf("invalid port %q: a host address is not supported; caged always binds %s", value, loopbackIP)
 	}
 	if strings.Contains(value, "/") {
 		return Port{}, fmt.Errorf("invalid port %q: protocols are not supported; caged publishes TCP only", value)
 	}
-	for _, part := range parts {
-		if isRange(part) {
-			return Port{}, fmt.Errorf("invalid port %q: port ranges are not supported", value)
-		}
+	if slices.ContainsFunc(parts, isRange) {
+		return Port{}, fmt.Errorf("invalid port %q: port ranges are not supported", value)
 	}
 	for _, part := range parts {
 		if !allDigits(part) {
@@ -63,11 +62,11 @@ func parsePort(value string) (Port, error) {
 	for i, part := range parts {
 		number, ok := portNumber(part)
 		if !ok {
-			return Port{}, fmt.Errorf("invalid port %q: %s is out of range 1-%d", value, part, maxPort)
+			return Port{}, fmt.Errorf("invalid port %q: %s is out of range 1-%d", value, part, MaxPort)
 		}
 		numbers[i] = number
 	}
-	port := Port{HostIP: LoopbackIP, HostPort: numbers[0], ContainerPort: numbers[0]}
+	port := Port{HostIP: loopbackIP, HostPort: numbers[0], ContainerPort: numbers[0]}
 	if len(numbers) == 2 {
 		port.ContainerPort = numbers[1]
 	}
@@ -99,7 +98,7 @@ func portNumber(digits string) (int, bool) {
 	number := 0
 	for i := 0; i < len(digits); i++ {
 		number = number*10 + int(digits[i]-'0')
-		if number > maxPort {
+		if number > MaxPort {
 			return 0, false
 		}
 	}

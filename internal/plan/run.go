@@ -1,4 +1,5 @@
-// Package plan contains transport-neutral data for a disposable agent run.
+// Package plan contains transport-neutral data for a disposable agent run,
+// and two rules on that data: -p parsing and container-path containment.
 package plan
 
 import "io/fs"
@@ -21,6 +22,9 @@ type ConfigMount struct {
 	MaskFiles []string // file paths hidden with a temporary empty-file bind, relative to DestPath
 	// Link is the host symlink this mount follows; "" for a direct mount.
 	Link string
+	// Staged mounts come from an agent.ConfigPath with Staged set. The
+	// container runtime mounts a symlink-free copy and writes changes back.
+	Staged bool
 }
 
 // ConfigReport is the outcome of host config discovery: the mounts to make,
@@ -83,6 +87,7 @@ type Extension struct {
 type ConfigStatus struct {
 	Source       string   // the file, shown with ~, whether or not it exists
 	Found        bool     // the file exists
+	Created      bool     // this run wrote the starter file
 	Apt          []string // image.apt, sorted
 	LinkAllow    int      // number of links.allow roots
 	Workdirs     bool     // the workdirs key is present

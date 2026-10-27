@@ -12,20 +12,16 @@ import (
 	"github.com/JeremyOrr4/caged/internal/pathpolicy"
 	"github.com/JeremyOrr4/caged/internal/plan"
 	"github.com/JeremyOrr4/caged/internal/system"
+	"github.com/JeremyOrr4/caged/internal/testkit"
 )
-
-// fakeEnv is a fixed environment for config-directory overrides.
-type fakeEnv map[string]string
-
-func (e fakeEnv) LookupEnv(key string) (string, bool) {
-	value, ok := e[key]
-	return value, ok
-}
 
 // policies is a fixed link policy for tests.
 type policies struct {
-	allow    []string
-	readOnly bool // the allow roots are read-only
+	allow         []string
+	readOnly      bool     // the allow roots are read-only
+	readOnlyAllow []string // further allow roots, always read-only
+	own           []string // caged's own folders, as userconfig.Store.LinkPolicy passes them
+	deny          []string // links.deny roots
 }
 
 func (p policies) LinkPolicy(home string) (*pathpolicy.Policy, error) {
@@ -34,34 +30,43 @@ func (p policies) LinkPolicy(home string) (*pathpolicy.Policy, error) {
 		resolved = home
 	}
 	cfg := pathpolicy.Config{Home: home, ResolvedHome: resolved, Source: "~/.config/caged/config.yaml", Field: "links.allow"}
-	for _, path := range p.allow {
+	allowRoot := func(path string, readOnly bool) {
 		forms := []string{path}
 		if r, err := filepath.EvalSymlinks(path); err == nil {
 			forms = append(forms, r)
 		}
-		cfg.Allow = append(cfg.Allow, pathpolicy.Root{Path: path, Forms: forms, ReadOnly: p.readOnly})
+		cfg.Allow = append(cfg.Allow, pathpolicy.Root{Path: path, Forms: forms, ReadOnly: readOnly})
 	}
-	for _, path := range pathpolicy.BuiltinDeny(home) {
+	for _, path := range p.allow {
+		allowRoot(path, p.readOnly)
+	}
+	for _, path := range p.readOnlyAllow {
+		allowRoot(path, true)
+	}
+	for _, path := range pathpolicy.BuiltinDeny(home, p.own...) {
 		forms := []string{path}
 		if r, err := filepath.EvalSymlinks(path); err == nil {
 			forms = append(forms, r)
 		}
 		cfg.Deny = append(cfg.Deny, pathpolicy.Root{Path: path, Forms: forms, Builtin: true})
 	}
+	for _, path := range p.deny {
+		cfg.Deny = append(cfg.Deny, pathpolicy.Root{Path: path, Forms: []string{path}})
+	}
 	return pathpolicy.New(cfg)
 }
 
 // resolveConfigs runs the production resolver on the real filesystem with the
-// built-in agents, a controlled environment, and no allowed link roots.
-func resolveConfigs(t *testing.T, home string, env fakeEnv) plan.ConfigReport {
+// built-in agents, the environment variables vars, and no allowed link roots.
+func resolveConfigs(t *testing.T, home string, vars map[string]string) plan.ConfigReport {
 	t.Helper()
-	return resolveConfigsWith(t, home, env, policies{})
+	return resolveConfigsWith(t, home, vars, policies{})
 }
 
 // resolveConfigsWith is resolveConfigs with the given link policy.
-func resolveConfigsWith(t *testing.T, home string, env fakeEnv, links policies) plan.ConfigReport {
+func resolveConfigsWith(t *testing.T, home string, vars map[string]string, links policies) plan.ConfigReport {
 	t.Helper()
-	report, err := NewResolver(system.FS{}, env, agent.Builtin().All(), DefaultSharedFiles(), links).Resolve(home)
+	report, err := NewResolver(Deps{FS: system.FS{}, Env: testkit.Env{Vars: vars}, Agents: agent.Builtin().All(), Shared: DefaultSharedFiles(), Policies: links}).Resolve(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +86,7 @@ func TestResolveOutsideConfigThroughAliasedParentIsNotTreatedAsLink(t *testing.T
 		t.Fatal(err)
 	}
 
-	report := resolveConfigs(t, home, fakeEnv{"COPILOT_HOME": filepath.Join(alias, "copilot")})
+	report := resolveConfigs(t, home, map[string]string{"COPILOT_HOME": filepath.Join(alias, "copilot")})
 	for _, refusal := range report.Refused {
 		if refusal.Path == filepath.Join(alias, "copilot") {
 			if refusal.Reason != "resolves outside home" {
@@ -152,7 +157,7 @@ func TestConfigOverrideCannotMountHomeDirectory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	report := resolveConfigs(t, home, fakeEnv{"CODEX_HOME": home})
+	report := resolveConfigs(t, home, map[string]string{"CODEX_HOME": home})
 	for _, mount := range report.Mounts {
 		if filepath.Clean(mount.HostPath) == filepath.Clean(home) {
 			t.Fatal("agent config override mounted the entire home directory")

@@ -11,6 +11,7 @@ import (
 	"github.com/JeremyOrr4/caged/internal/engine"
 	"github.com/JeremyOrr4/caged/internal/images"
 	"github.com/JeremyOrr4/caged/internal/plan"
+	"github.com/JeremyOrr4/caged/internal/testkit"
 )
 
 func TestOlderThan(t *testing.T) {
@@ -71,6 +72,7 @@ type doctorCase struct {
 	host      Host
 	daemon    fakeDaemon
 	images    map[string]engine.ImageInfo // nil means only a current runtime image
+	inspect   error                       // fails every InspectImage when set
 	exts      fakeExts
 	status    *plan.ConfigStatus // nil means no config file
 	statusErr error
@@ -80,7 +82,7 @@ type doctorCase struct {
 	probeErr  error
 	workDir   string
 	project   *fakeProject
-	env       *fakeEnv
+	env       Env // nil means a home of /home/me and a cwd of /home/me/code/app
 	version   string
 }
 
@@ -102,7 +104,7 @@ func (c doctorCase) diagnose(t *testing.T) (DoctorReport, []string) {
 	if stored == nil {
 		stored = baseImage(currentImage(version))
 	}
-	store := &fakeStore{calls: &calls, images: stored}
+	store := &fakeStore{calls: &calls, images: stored, inspectErr: c.inspect}
 	versions := c.versions
 	if versions == "" && c.readErr == nil {
 		versions = healthyVersions
@@ -118,7 +120,7 @@ func (c doctorCase) diagnose(t *testing.T) (DoctorReport, []string) {
 	}
 	env := c.env
 	if env == nil {
-		env = &fakeEnv{home: "/home/me", wd: "/home/me/code/app"}
+		env = &testkit.Env{Home: "/home/me", WorkDir: "/home/me/code/app"}
 	}
 	status := plan.ConfigStatus{Source: "~/.config/caged/config.yaml"}
 	if c.status != nil {
@@ -206,6 +208,7 @@ func TestDoctorRows(t *testing.T) {
 		// image
 		{name: "image missing", c: doctorCase{images: map[string]engine.ImageInfo{}}, check: "image", want: "WARN caged-runtime:latest is not built yet; the next run builds it, or run caged build"},
 		{name: "image stale", c: doctorCase{images: baseImage(staleBase)}, check: "image", want: "WARN caged-runtime:latest is out of date; the next run rebuilds it"},
+		{name: "image cannot be inspected", c: doctorCase{inspect: errors.New("boom")}, check: "image", want: "WARN could not inspect caged-runtime:latest: boom"},
 		{name: "image unlabeled", c: doctorCase{images: baseImage(engine.ImageInfo{ID: "sha256:x", Arch: "amd64"})}, check: "image", want: "WARN caged-runtime:latest is out of date; the next run rebuilds it"},
 
 		// config
@@ -214,6 +217,7 @@ func TestDoctorRows(t *testing.T) {
 		{name: "config with packages and links", c: doctorCase{exts: fakeExts{ext: ext}, status: &plan.ConfigStatus{Source: "~/.config/caged/config.yaml", Found: true, Apt: []string{"neovim", "tmux"}, LinkAllow: 1}}, check: "config", want: "PASS ~/.config/caged/config.yaml (apt: neovim, tmux; links.allow: 1)"},
 		{name: "config with workdirs", c: doctorCase{status: &plan.ConfigStatus{Source: "~/.config/caged/config.yaml", Found: true, Workdirs: true, WorkdirAllow: 2}}, check: "config", want: "PASS ~/.config/caged/config.yaml (links.allow: 0; workdirs.allow: 2)"},
 		{name: "an empty config file", c: doctorCase{status: &plan.ConfigStatus{Source: "~/.config/caged/config.yaml", Found: true}}, check: "config", want: "PASS ~/.config/caged/config.yaml (links.allow: 0)"},
+		{name: "a starter file created by this run", c: doctorCase{status: &plan.ConfigStatus{Source: "~/.config/caged/config.yaml", Found: true, Created: true}}, check: "config", want: "PASS ~/.config/caged/config.yaml (links.allow: 0; starter file created just now)"},
 		{name: "a leftover image.json", c: doctorCase{status: &plan.ConfigStatus{Source: "~/.config/caged/config.yaml", Legacy: "~/.config/caged/image.json"}}, check: "config", want: "WARN no config file (~/.config/caged/config.yaml); ~/.config/caged/image.json is no longer read: move its packages to image.apt in ~/.config/caged/config.yaml"},
 		{name: "a leftover image.json next to a config file", c: doctorCase{status: &plan.ConfigStatus{Source: "~/.config/caged/config.yaml", Found: true, Legacy: "~/.config/caged/image.json"}}, check: "config", want: "WARN ~/.config/caged/config.yaml (links.allow: 0); ~/.config/caged/image.json is no longer read: move its packages to image.apt in ~/.config/caged/config.yaml"},
 
@@ -225,18 +229,20 @@ func TestDoctorRows(t *testing.T) {
 		}}}}, check: "links", want: `WARN /h/.claude/CLAUDE.md (symlink target ~/dot/CLAUDE.md is not under links.allow); add "- path: ~/dot" under links.allow in ~/.config/caged/config.yaml`},
 		{name: "a refusal without a hint is not a warning", c: doctorCase{configs: &fakeConfigs{report: plan.ConfigReport{Refused: []plan.Refusal{{Path: "/h/.claude/skip", Reason: "dangling or unresolvable symlink"}}}}}, check: "links", want: "PASS no symlinked config"},
 		{name: "the link policy cannot be loaded", c: doctorCase{configs: &fakeConfigs{err: errors.New("~/.config/caged/config.yaml: links.allow entry \"~\" is too broad: it contains the home directory")}}, check: "links", want: `FAIL ~/.config/caged/config.yaml: links.allow entry "~" is too broad: it contains the home directory`},
-		{name: "links need a home directory", c: doctorCase{env: &fakeEnv{homeErr: errors.New("unset"), wd: "/w"}}, check: "links", want: "FAIL find home directory: unset"},
+		{name: "links need a home directory", c: doctorCase{env: &testkit.Env{HomeErr: errors.New("unset"), WorkDir: "/w"}}, check: "links", want: "FAIL find home directory: unset"},
 
 		// ext-image
 		{name: "extension not built yet", c: doctorCase{exts: fakeExts{ext: ext}}, check: "ext-image", want: "WARN caged-runtime:ext is not built yet; the next run builds it"},
 		{name: "extension image current", c: doctorCase{exts: fakeExts{ext: ext}, images: both(currentExtensionImage(*ext, "sha256:current", version))}, check: "ext-image", want: "PASS caged-runtime:ext is current (apt: neovim, tmux)"},
 		{name: "extension image stale", c: doctorCase{exts: fakeExts{ext: ext}, images: both(staleExt)}, check: "ext-image", want: "WARN caged-runtime:ext is out of date; the next run rebuilds it"},
 		{name: "extension image built on another base", c: doctorCase{exts: fakeExts{ext: ext}, images: both(currentExtensionImage(*ext, "sha256:other", version))}, check: "ext-image", want: "WARN caged-runtime:ext is out of date; the next run rebuilds it"},
+		{name: "extension image cannot be inspected", c: doctorCase{exts: fakeExts{ext: ext}, inspect: errors.New("boom")}, check: "ext-image", want: "WARN could not inspect caged-runtime:ext: boom"},
 		{name: "extension image left over with no file", c: doctorCase{images: both(staleExt)}, check: "ext-image", want: "WARN caged-runtime:ext is no longer used (config.yaml lists no image.apt packages); caged clean removes it"},
 		{name: "extension needs the base image first", c: doctorCase{exts: fakeExts{ext: ext}, images: map[string]engine.ImageInfo{}}, check: "ext-image", want: "WARN caged-runtime:ext is not built yet; the next run builds it"},
 
 		// arch
 		{name: "image arch differs", c: doctorCase{images: baseImage(engine.ImageInfo{ID: "x", OS: "linux", Arch: "arm64", Labels: currentImage(version).Labels})}, check: "arch", want: "FAIL image linux/arm64 does not match Docker (amd64); it runs under emulation; run caged build --no-cache"},
+		{name: "an image that cannot be inspected has no arch to check", c: doctorCase{exts: fakeExts{ext: ext}, inspect: errors.New("boom")}, check: "arch", want: "SKIP no image built yet"},
 		{name: "no image to check the arch of", c: doctorCase{images: map[string]engine.ImageInfo{}}, check: "arch", want: "SKIP no image built yet"},
 		{name: "arch uses the extension image when it exists", c: doctorCase{exts: fakeExts{ext: ext}, images: both(engine.ImageInfo{ID: "x", Arch: "arm64", Labels: currentExtensionImage(*ext, "sha256:current", version).Labels})}, check: "arch", want: "FAIL image linux/arm64 does not match Docker (amd64); it runs under emulation; run caged build --no-cache"},
 
@@ -246,14 +252,16 @@ func TestDoctorRows(t *testing.T) {
 		{name: "project is the home directory", c: doctorCase{workDir: "/home/me"}, check: "project", want: "WARN /home/me is the home directory or /; caged refuses to mount it without --allow-broad-mount (not probed)"},
 		{name: "project is /", c: doctorCase{workDir: "/"}, check: "project", want: "WARN / is the home directory or /; caged refuses to mount it without --allow-broad-mount (not probed)"},
 		{name: "project dir is refused by the resolver", c: doctorCase{project: &fakeProject{err: errors.New(`inspect working directory "/nonexistent": stat /nonexistent: no such file or directory`)}, workDir: "/nonexistent"}, check: "project", want: `FAIL inspect working directory "/nonexistent": stat /nonexistent: no such file or directory`},
-		{name: "no cwd", c: doctorCase{env: &fakeEnv{home: "/home/me", wdErr: errors.New("gone")}}, check: "project", want: "FAIL get current working directory: gone"},
-		{name: "no home", c: doctorCase{env: &fakeEnv{homeErr: errors.New("unset"), wd: "/w"}}, check: "project", want: "FAIL find home directory: unset"},
+		{name: "no cwd", c: doctorCase{env: &testkit.Env{Home: "/home/me", WorkDirErr: errors.New("gone")}}, check: "project", want: "FAIL get current working directory: gone"},
+		{name: "no home", c: doctorCase{env: &testkit.Env{HomeErr: errors.New("unset"), WorkDir: "/w"}}, check: "project", want: "FAIL find home directory: unset"},
+		{name: "an image that cannot be inspected cannot be probed with", c: doctorCase{inspect: errors.New("boom")}, check: "project", want: "SKIP no image built yet to probe with"},
 		{name: "no image to probe with", c: doctorCase{images: map[string]engine.ImageInfo{}}, check: "project", want: "SKIP no image built yet to probe with"},
 
 		// versions
 		{name: "versions file missing", c: doctorCase{readErr: notFoundErr}, check: "versions", want: "WARN no versions file in caged-runtime:latest (the image was built before this release)"},
 		{name: "versions file empty", c: doctorCase{versions: "\n"}, check: "versions", want: "WARN the versions file in caged-runtime:latest is empty"},
 		{name: "unknown version is shown", c: doctorCase{versions: "pi=unknown\nclaude=1.0\n"}, check: "versions", want: "PASS claude 1.0, pi unknown"},
+		{name: "an image that cannot be inspected has no versions to read", c: doctorCase{inspect: errors.New("boom")}, check: "versions", want: "SKIP no image built yet"},
 		{name: "no image to read from", c: doctorCase{images: map[string]engine.ImageInfo{}}, check: "versions", want: "SKIP no image built yet"},
 	}
 	for _, tt := range tests {
@@ -363,5 +371,67 @@ func TestDoctorUsesTheWorkDirOption(t *testing.T) {
 	}
 	if report.Results[7].Detail != "/srv/other can be mounted" {
 		t.Fatalf("project row = %+v", report.Results[7])
+	}
+}
+
+// TestRunChecksSkipsAnUnknownNeed pins bugs.md B-APP-1: a need that names no
+// check run so far (a typo, or a check later in the list) must block, not
+// read as a pass.
+func TestRunChecksSkipsAnUnknownNeed(t *testing.T) {
+	t.Parallel()
+
+	ran := map[string]bool{}
+	pass := func(name string) func(context.Context, *facts) Result {
+		return func(context.Context, *facts) Result {
+			ran[name] = true
+			return Result{Status: StatusPass, Detail: "ok"}
+		}
+	}
+	checks := []check{
+		{name: "a", run: pass("a")},
+		{name: "typo", needs: []string{"a", "nope"}, run: pass("typo")},
+		{name: "early", needs: []string{"late"}, run: pass("early")},
+		{name: "late", run: pass("late")},
+	}
+	got := lines(DoctorReport{Results: runChecks(context.Background(), &facts{}, checks)})
+	want := []string{"a PASS ok", "typo SKIP needs nope", "early SKIP needs late", "late PASS ok"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("runChecks() =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if ran["typo"] || ran["early"] {
+		t.Fatalf("a check with an unmet need ran: %v", ran)
+	}
+}
+
+// TestDoctorChecksNeedOnlyEarlierChecks keeps the shipped list valid: every
+// need names a check that comes before it, so nothing is skipped for a
+// missing name.
+func TestDoctorChecksNeedOnlyEarlierChecks(t *testing.T) {
+	t.Parallel()
+
+	seen := map[string]bool{}
+	for _, check := range (&Doctor{}).checks() {
+		for _, need := range check.needs {
+			if !seen[need] {
+				t.Errorf("check %q needs %q, which is not an earlier check", check.name, need)
+			}
+		}
+		if seen[check.name] {
+			t.Errorf("check %q is listed twice", check.name)
+		}
+		seen[check.name] = true
+	}
+}
+
+func TestDoctorResolvesHomeOnce(t *testing.T) {
+	t.Parallel()
+
+	env := &countingEnv{Home: "/home/me", WorkDir: "/home/me/code/app"}
+	report, _ := doctorCase{env: env}.diagnose(t)
+	if report.Failed() != 0 {
+		t.Fatalf("Diagnose() = %v; want a healthy machine", lines(report))
+	}
+	if env.homeCalls != 1 {
+		t.Fatalf("home directory looked up %d times; want once per Diagnose", env.homeCalls)
 	}
 }

@@ -2,7 +2,7 @@ package agent
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -18,7 +18,7 @@ type Registry struct {
 func NewRegistry(agents ...Agent) (*Registry, error) {
 	registry := &Registry{byName: make(map[string]Agent, len(agents))}
 	for _, definition := range agents {
-		if definition.Name == "" || definition.Name != strings.TrimSpace(strings.ToLower(definition.Name)) {
+		if definition.Name == "" || definition.Name != normalizeName(definition.Name) {
 			return nil, fmt.Errorf("agent name %q must be lowercase, non-empty, and without surrounding spaces", definition.Name)
 		}
 		if len(definition.Command) == 0 {
@@ -30,18 +30,21 @@ func NewRegistry(agents ...Agent) (*Registry, error) {
 		registry.byName[definition.Name] = definition.clone()
 		registry.names = append(registry.names, definition.Name)
 	}
-	sort.Strings(registry.names)
+	slices.Sort(registry.names)
 	return registry, nil
 }
 
 // Lookup finds an agent by name, ignoring case and surrounding spaces.
 func (r *Registry) Lookup(name string) (Agent, error) {
-	key := strings.TrimSpace(strings.ToLower(name))
-	if definition, ok := r.byName[key]; ok {
+	if definition, ok := r.byName[normalizeName(name)]; ok {
 		return definition.clone(), nil
 	}
 	return Agent{}, fmt.Errorf("unsupported agent %q; supported agents: %s", name, strings.Join(r.names, ", "))
 }
+
+// normalizeName is the form of an agent name: lowercase, without surrounding
+// spaces. Registered names must already be in it; Lookup brings input into it.
+func normalizeName(name string) string { return strings.TrimSpace(strings.ToLower(name)) }
 
 // Names returns the sorted agent names.
 func (r *Registry) Names() []string {

@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/JeremyOrr4/caged/internal/agent"
 	"github.com/JeremyOrr4/caged/internal/app"
 )
 
@@ -173,5 +175,131 @@ func TestCompletionSuggestsAgentsWithDescriptions(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("completion output is missing %q:\n%s", want, stdout)
 		}
+	}
+}
+
+// TestDoctorAndCleanHelp pins the two help texts no golden file covers (D-14).
+// Each want is the baseline binary's output (refactor-baseline-help.txt).
+func TestDoctorAndCleanHelp(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"doctor": "Check that Docker is installed and running, that the runtime image is current, that the\n" +
+			"config file is valid (config), that symlinked agent config is allowed (links), that the image\n" +
+			"matches Docker's architecture, that the project directory can be mounted, and which CLI\n" +
+			"versions the image contains. Exits 1 when a check fails. It never builds, pulls, or removes\n" +
+			"anything, and never prints an environment value.\n" +
+			"\n" +
+			"Usage:\n" +
+			"  caged doctor [flags]\n" +
+			"\n" +
+			"Flags:\n" +
+			"  -h, --help             help for doctor\n" +
+			"  -w, --workdir string   check that this host directory can be mounted (default: the current directory)\n",
+		"clean": "Remove the runtime image, the extension image, and any older or replaced caged images, so they do not\n" +
+			"outlive caged. Run it before uninstalling. An image that a container still uses is kept and\n" +
+			"reported. It never touches ~/.config/caged, agent configs, containers, volumes, or the Docker build\n" +
+			"cache (docker builder prune clears that).\n" +
+			"\n" +
+			"Usage:\n" +
+			"  caged clean [flags]\n" +
+			"\n" +
+			"Flags:\n" +
+			"      --dry-run   print what would be removed, and remove nothing\n" +
+			"  -h, --help      help for clean\n",
+	}
+	for command, want := range tests {
+		t.Run(command, func(t *testing.T) {
+			t.Parallel()
+			stdout, err := execute(t, &fakeService{}, command, "--help")
+			if err != nil || stdout != want {
+				t.Fatalf("%s --help = %q, %v; want %q", command, stdout, err, want)
+			}
+		})
+	}
+}
+
+// failingWriter accepts ok writes, then fails every later one.
+type failingWriter struct {
+	ok  int
+	err error
+}
+
+func (w *failingWriter) Write(p []byte) (int, error) {
+	if w.ok == 0 {
+		return 0, w.err
+	}
+	w.ok--
+	return len(p), nil
+}
+
+// TestCommandsReturnWriteErrors pins that a failed stdout write is the
+// command's error (exit 1), not a silent success. In list only the final
+// Flush can fail: the tabwriter buffers every row with a tab until then.
+func TestCommandsReturnWriteErrors(t *testing.T) {
+	t.Parallel()
+
+	broken := errors.New("broken pipe")
+	failing := app.DoctorReport{Header: "caged test (linux/amd64)", Results: []app.Result{{Name: "docker", Status: app.StatusFail, Detail: "missing"}}}
+	tests := []struct {
+		name    string
+		service *fakeService
+		args    []string
+		ok      int // writes that succeed first
+	}{
+		{name: "build", service: &fakeService{built: []app.BuiltImage{{Role: "runtime", Ref: "caged-runtime:latest"}}}, args: []string{"build"}},
+		{name: "clean with results", service: &fakeService{cleaned: []app.CleanResult{{Ref: "caged-runtime:latest", Outcome: app.Removed}}}, args: []string{"clean"}},
+		{name: "clean with nothing to clean", service: &fakeService{}, args: []string{"clean"}},
+		{name: "doctor header", service: &fakeService{report: app.DoctorReport{Header: "caged test (linux/amd64)"}}, args: []string{"doctor"}},
+		{name: "doctor row, before the failed-checks error", service: &fakeService{report: failing}, args: []string{"doctor"}, ok: 1},
+		{name: "list", service: &fakeService{statuses: []app.AgentStatus{{Name: "claude"}}}, args: []string{"list"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := NewRootCmd("test", agent.Builtin(), tt.service.services())
+			cmd.SetArgs(tt.args)
+			cmd.SetOut(&failingWriter{ok: tt.ok, err: broken})
+			cmd.SetErr(&bytes.Buffer{})
+			if err := cmd.Execute(); !errors.Is(err, broken) {
+				t.Fatalf("%v error = %v; want the write error", tt.args, err)
+			}
+		})
+	}
+}
+
+// TestStdoutTablesEscapeWhatATerminalWouldActOn pins WB-B5 (bugs.md
+// Q-WB-6): doctor, list, build and clean print paths, image names and
+// docker's messages one per line, and a container can name a link in its
+// config folder with control characters, so each line is printable: an
+// escape sequence or carriage return cannot rewrite the screen, and a
+// newline or tab cannot forge a row or shift a column.
+func TestStdoutTablesEscapeWhatATerminalWouldActOn(t *testing.T) {
+	t.Parallel()
+
+	const nasty = "~/.claude/x\x1b[2J\ry\nPASS  fake\tz"
+	const shown = `~/.claude/x\x1b[2J\ry\nPASS  fake\tz`
+	for _, tc := range []struct {
+		name    string
+		service *fakeService
+		args    []string
+		want    string
+	}{
+		{"doctor", &fakeService{report: app.DoctorReport{Header: "caged\x1b]0;t\x07", Results: []app.Result{{Status: app.StatusWarn, Name: "links", Detail: nasty}}}}, []string{"doctor"},
+			"caged\\x1b]0;t\\a\nWARN  links      " + shown + "\n"},
+		{"list", &fakeService{statuses: []app.AgentStatus{{Name: "claude", Config: []string{nasty}, EnvSet: []string{"A\rB"}}}}, []string{"list"},
+			"AGENT   CONFIG                                AUTH ENV SET\nclaude  " + shown + "  A\\rB\n"},
+		{"build", &fakeService{built: []app.BuiltImage{{Role: "runtime", Ref: "img\x1b[1A", Summary: nasty}}}, []string{"build"},
+			"built runtime image img\\x1b[1A (" + shown + ")\n"},
+		{"clean", &fakeService{cleaned: []app.CleanResult{{Ref: "img\r", Outcome: app.Kept, Reason: nasty}}}, []string{"clean"},
+			"kept img\\r: " + shown + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stdout, err := execute(t, tc.service, tc.args...)
+			if err != nil || stdout != tc.want {
+				t.Fatalf("stdout = %q, %v; want %q", stdout, err, tc.want)
+			}
+		})
 	}
 }

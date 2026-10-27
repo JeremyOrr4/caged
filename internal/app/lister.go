@@ -2,19 +2,18 @@ package app
 
 import (
 	"fmt"
-	"path/filepath"
-	"strings"
 
 	"github.com/JeremyOrr4/caged/internal/agent"
+	"github.com/JeremyOrr4/caged/internal/pathpolicy"
 	"github.com/JeremyOrr4/caged/internal/plan"
 )
 
 // AgentStatus is one row of `caged list`: an agent, the host config that a run
 // would mount for it, and which of its credential variables are set.
 type AgentStatus struct {
-	Name, Description string
-	Config            []string // host paths shown with ~, empty when none was found
-	EnvSet            []string // names of the agent's auth variables that are set
+	Name   string
+	Config []string // host paths shown with ~, empty when none was found
+	EnvSet []string // names of the agent's auth variables that are set
 }
 
 // Lister is the list use case. It needs no Docker.
@@ -50,13 +49,11 @@ func (l *Lister) List() ([]AgentStatus, error) {
 	}
 	statuses := make([]AgentStatus, 0, len(l.agents))
 	for _, definition := range l.agents {
-		status := AgentStatus{Name: definition.Name, Description: definition.Description, Config: describeRoots(home, roots[definition.Name])}
-		for _, name := range definition.Auth.Environment {
-			if _, ok := l.env.LookupEnv(name); ok {
-				status.EnvSet = append(status.EnvSet, name)
-			}
-		}
-		statuses = append(statuses, status)
+		statuses = append(statuses, AgentStatus{
+			Name:   definition.Name,
+			Config: describeRoots(home, roots[definition.Name]),
+			EnvSet: definition.ResolveEnv(nil, envSet(l.env)),
+		})
 	}
 	return statuses, nil
 }
@@ -75,20 +72,11 @@ func describeRoots(home string, roots []string) []string {
 	}
 	var described []string
 	for _, root := range order {
-		entry := tildePath(home, root)
+		entry := pathpolicy.Tilde(home, root)
 		if counts[root] > 1 {
 			entry += fmt.Sprintf(" (%d files)", counts[root])
 		}
 		described = append(described, entry)
 	}
 	return described
-}
-
-// tildePath shows path with the home directory replaced by "~".
-func tildePath(home, path string) string {
-	home = filepath.Clean(home)
-	if rest, ok := strings.CutPrefix(filepath.Clean(path), home+string(filepath.Separator)); ok {
-		return "~/" + filepath.ToSlash(rest)
-	}
-	return path
 }

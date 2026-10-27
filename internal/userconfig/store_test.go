@@ -2,53 +2,13 @@ package userconfig
 
 import (
 	"errors"
-	"io/fs"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/JeremyOrr4/caged/internal/pathpolicy"
 	"github.com/JeremyOrr4/caged/internal/plan"
+	"github.com/JeremyOrr4/caged/internal/testkit"
 )
-
-// fakeFS is an in-memory filesystem: a map of path to content.
-type fakeFS struct {
-	files map[string]string
-	err   error // returned for every read when set
-	reads int
-	read  []string
-}
-
-func (f *fakeFS) ReadFile(name string) ([]byte, error) {
-	f.reads++
-	f.read = append(f.read, name)
-	if f.err != nil {
-		return nil, f.err
-	}
-	data, ok := f.files[name]
-	if !ok {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
-	}
-	return []byte(data), nil
-}
-
-func (f *fakeFS) Stat(name string) (fs.FileInfo, error) {
-	if _, ok := f.files[name]; ok {
-		return nil, nil
-	}
-	return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
-}
-
-func (f *fakeFS) EvalSymlinks(path string) (string, error) { return path, nil }
-
-type fakeEnv struct {
-	vars    map[string]string
-	home    string
-	homeErr error
-}
-
-func (e fakeEnv) LookupEnv(key string) (string, bool) { v, ok := e.vars[key]; return v, ok }
-func (e fakeEnv) UserHomeDir() (string, error)        { return e.home, e.homeErr }
 
 const (
 	testPath   = "/home/me/.config/caged/config.yaml"
@@ -57,7 +17,7 @@ const (
 
 func storeWith(body string) (*Store, *fakeFS) {
 	fsys := &fakeFS{files: map[string]string{testPath: body}}
-	return NewStore(fsys, fakeEnv{home: "/home/me"}), fsys
+	return NewStore(fsys, testkit.Env{Home: "/home/me"}), fsys
 }
 
 func TestStorePath(t *testing.T) {
@@ -65,18 +25,18 @@ func TestStorePath(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		env         fakeEnv
+		env         testkit.Env
 		want        string
 		wantDisplay string
 		wantErr     string
 	}{
-		{name: "default", env: fakeEnv{home: "/home/me"}, want: "/home/me/.config/caged/config.yaml", wantDisplay: "~/.config/caged/config.yaml"},
-		{name: "XDG_CONFIG_HOME wins when absolute", env: fakeEnv{home: "/home/me", vars: map[string]string{"XDG_CONFIG_HOME": "/xdg"}}, want: "/xdg/caged/config.yaml", wantDisplay: "/xdg/caged/config.yaml"},
-		{name: "XDG_CONFIG_HOME under the home directory is shown with ~", env: fakeEnv{home: "/home/me", vars: map[string]string{"XDG_CONFIG_HOME": "/home/me/cfg"}}, want: "/home/me/cfg/caged/config.yaml", wantDisplay: "~/cfg/caged/config.yaml"},
-		{name: "relative XDG_CONFIG_HOME is ignored", env: fakeEnv{home: "/home/me", vars: map[string]string{"XDG_CONFIG_HOME": "cfg"}}, want: "/home/me/.config/caged/config.yaml", wantDisplay: "~/.config/caged/config.yaml"},
-		{name: "empty XDG_CONFIG_HOME is ignored", env: fakeEnv{home: "/home/me", vars: map[string]string{"XDG_CONFIG_HOME": ""}}, want: "/home/me/.config/caged/config.yaml", wantDisplay: "~/.config/caged/config.yaml"},
-		{name: "no home directory", env: fakeEnv{homeErr: errors.New("unset")}, wantErr: "find home directory: unset"},
-		{name: "XDG needs no home directory", env: fakeEnv{homeErr: errors.New("unset"), vars: map[string]string{"XDG_CONFIG_HOME": "/xdg"}}, want: "/xdg/caged/config.yaml", wantDisplay: "/xdg/caged/config.yaml"},
+		{name: "default", env: testkit.Env{Home: "/home/me"}, want: "/home/me/.config/caged/config.yaml", wantDisplay: "~/.config/caged/config.yaml"},
+		{name: "XDG_CONFIG_HOME wins when absolute", env: testkit.Env{Home: "/home/me", Vars: map[string]string{"XDG_CONFIG_HOME": "/xdg"}}, want: "/xdg/caged/config.yaml", wantDisplay: "/xdg/caged/config.yaml"},
+		{name: "XDG_CONFIG_HOME under the home directory is shown with ~", env: testkit.Env{Home: "/home/me", Vars: map[string]string{"XDG_CONFIG_HOME": "/home/me/cfg"}}, want: "/home/me/cfg/caged/config.yaml", wantDisplay: "~/cfg/caged/config.yaml"},
+		{name: "relative XDG_CONFIG_HOME is ignored", env: testkit.Env{Home: "/home/me", Vars: map[string]string{"XDG_CONFIG_HOME": "cfg"}}, want: "/home/me/.config/caged/config.yaml", wantDisplay: "~/.config/caged/config.yaml"},
+		{name: "empty XDG_CONFIG_HOME is ignored", env: testkit.Env{Home: "/home/me", Vars: map[string]string{"XDG_CONFIG_HOME": ""}}, want: "/home/me/.config/caged/config.yaml", wantDisplay: "~/.config/caged/config.yaml"},
+		{name: "no home directory", env: testkit.Env{HomeErr: errors.New("unset")}, wantErr: "find home directory: unset"},
+		{name: "XDG needs no home directory", env: testkit.Env{HomeErr: errors.New("unset"), Vars: map[string]string{"XDG_CONFIG_HOME": "/xdg"}}, want: "/xdg/caged/config.yaml", wantDisplay: "/xdg/caged/config.yaml"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -86,6 +46,9 @@ func TestStorePath(t *testing.T) {
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("Path() error = %v, want %q", err, tt.wantErr)
+				}
+				if _, err := store.Source(); err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("Source() error = %v, want %q", err, tt.wantErr)
 				}
 				return
 			}
@@ -104,7 +67,7 @@ func TestStoreLoad(t *testing.T) {
 
 	t.Run("a missing file is not an error", func(t *testing.T) {
 		t.Parallel()
-		store := NewStore(&fakeFS{}, fakeEnv{home: "/home/me"})
+		store := NewStore(&fakeFS{}, testkit.Env{Home: "/home/me"})
 		got, err := store.Load()
 		if got != nil || err != nil {
 			t.Fatalf("Load() = %+v, %v; want nil, nil", got, err)
@@ -150,7 +113,7 @@ func TestStoreLoad(t *testing.T) {
 	})
 	t.Run("a read error names the file", func(t *testing.T) {
 		t.Parallel()
-		store := NewStore(&fakeFS{err: errors.New("permission denied")}, fakeEnv{home: "/home/me"})
+		store := NewStore(&fakeFS{err: errors.New("permission denied")}, testkit.Env{Home: "/home/me"})
 		_, err := store.Load()
 		if err == nil || err.Error() != "read ~/.config/caged/config.yaml: permission denied" {
 			t.Fatalf("Load() error = %v", err)
@@ -174,7 +137,7 @@ func TestStoreLoad(t *testing.T) {
 	})
 	t.Run("no home directory is an error", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewStore(&fakeFS{}, fakeEnv{homeErr: errors.New("unset")}).Load()
+		_, err := NewStore(&fakeFS{}, testkit.Env{HomeErr: errors.New("unset")}).Load()
 		if err == nil || err.Error() != "find home directory: unset" {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -195,10 +158,24 @@ func TestStoreStatus(t *testing.T) {
 	})
 	t.Run("a leftover image.json is reported as Legacy", func(t *testing.T) {
 		t.Parallel()
-		store := NewStore(&fakeFS{files: map[string]string{"/home/me/.config/caged/image.json": `{"apt":["jq"]}`}}, fakeEnv{home: "/home/me"})
+		store := NewStore(&fakeFS{files: map[string]string{"/home/me/.config/caged/image.json": `{"apt":["jq"]}`}}, testkit.Env{Home: "/home/me"})
 		status, err := store.Status()
 		if err != nil || status.Legacy != "~/.config/caged/image.json" || status.Found {
 			t.Fatalf("Status() = %+v, %v; want Legacy ~/.config/caged/image.json and no config.yaml", status, err)
+		}
+	})
+	t.Run("a leftover image.json next to an XDG config is reported", func(t *testing.T) {
+		t.Parallel()
+		store := NewStore(&fakeFS{files: map[string]string{"/xdg/caged/image.json": `{}`}}, testkit.Env{Home: "/home/me", Vars: map[string]string{"XDG_CONFIG_HOME": "/xdg"}})
+		if status, err := store.Status(); err != nil || status.Legacy != "/xdg/caged/image.json" || status.Source != "/xdg/caged/config.yaml" {
+			t.Fatalf("Status() = %+v, %v; want Legacy /xdg/caged/image.json", status, err)
+		}
+	})
+	t.Run("no home directory", func(t *testing.T) {
+		t.Parallel()
+		status, err := NewStore(&fakeFS{}, testkit.Env{HomeErr: errors.New("unset")}).Status()
+		if err == nil || err.Error() != "find home directory: unset" || status.Source != "" {
+			t.Fatalf("Status() = %+v, %v; want no source and the home directory error", status, err)
 		}
 	})
 	t.Run("an invalid file still names itself", func(t *testing.T) {
@@ -231,94 +208,21 @@ func TestStoreReadsTheFileOnce(t *testing.T) {
 	}
 }
 
-func TestLinkPolicy(t *testing.T) {
+// TestStateDirFollowsXDGStateHome: StateDir names the folder Approvals
+// writes to, so the resolver can keep the caged mount away from it (WB-B1).
+func TestStateDirFollowsXDGStateHome(t *testing.T) {
 	t.Parallel()
 
-	t.Run("without a file only the built-in deny list applies", func(t *testing.T) {
-		t.Parallel()
-		policy, err := NewStore(&fakeFS{}, fakeEnv{home: "/home/me"}).LinkPolicy("/home/me")
-		if err != nil || policy == nil {
-			t.Fatalf("LinkPolicy() = %v, %v; want a policy", policy, err)
+	for env, want := range map[*testkit.Env]string{
+		{Home: "/home/me"}: "/home/me/.local/state/caged",
+		{Home: "/home/me", Vars: map[string]string{"XDG_STATE_HOME": "/state"}}:   "/state/caged",
+		{Home: "/home/me", Vars: map[string]string{"XDG_STATE_HOME": "relative"}}: "/home/me/.local/state/caged",
+	} {
+		if got, err := NewStore(&fakeFS{}, *env).StateDir(); err != nil || got != want {
+			t.Errorf("StateDir() with %v = %q, %v; want %q", env.Vars, got, err, want)
 		}
-		if got := policy.Check("/home/me/dot/a").Verdict; got != pathpolicy.NotAllowed {
-			t.Fatalf("Check(/home/me/dot/a) = %d, want NotAllowed", got)
-		}
-		if got := policy.Check("/home/me/.ssh/id").Verdict; got != pathpolicy.Denied {
-			t.Fatalf("Check(/home/me/.ssh/id) = %d, want Denied", got)
-		}
-	})
-	t.Run("links.allow and links.deny shape the policy", func(t *testing.T) {
-		t.Parallel()
-		store, _ := storeWith("links:\n  allow:\n    - path: ~/dot\n      read_only: true\n  deny: [~/dot/private]\n")
-		policy, err := store.LinkPolicy("/home/me")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if decision := policy.Check("/home/me/dot/pi"); decision.Verdict != pathpolicy.Allowed || !decision.Root.ReadOnly {
-			t.Fatalf("Check(/home/me/dot/pi) = %+v, want Allowed and read-only", decision)
-		}
-		if got := policy.Check("/home/me/dot/private/x").Verdict; got != pathpolicy.Denied {
-			t.Fatalf("Check(/home/me/dot/private/x) = %d, want Denied", got)
-		}
-	})
-	t.Run("an allow root of ~ is too broad", func(t *testing.T) {
-		t.Parallel()
-		store, _ := storeWith("links:\n  allow:\n    - path: \"~\"\n")
-		_, err := store.LinkPolicy("/home/me")
-		if err == nil || !strings.Contains(err.Error(), "too broad") {
-			t.Fatalf("LinkPolicy() error = %v, want too broad", err)
-		}
-	})
-	t.Run("an invalid file is an error", func(t *testing.T) {
-		t.Parallel()
-		store, _ := storeWith("image: [\n")
-		if _, err := store.LinkPolicy("/home/me"); err == nil {
-			t.Fatal("LinkPolicy() succeeded on an invalid file")
-		}
-	})
-}
-
-func TestWorkdirPolicy(t *testing.T) {
-	t.Parallel()
-
-	t.Run("nil without a workdirs key", func(t *testing.T) {
-		t.Parallel()
-		store, _ := storeWith("image:\n  apt: [tmux]\n")
-		policy, err := store.WorkdirPolicy("/home/me")
-		if policy != nil || err != nil {
-			t.Fatalf("WorkdirPolicy() = %v, %v; want nil, nil", policy, err)
-		}
-	})
-	t.Run("nil without a file", func(t *testing.T) {
-		t.Parallel()
-		policy, err := NewStore(&fakeFS{}, fakeEnv{home: "/home/me"}).WorkdirPolicy("/home/me")
-		if policy != nil || err != nil {
-			t.Fatalf("WorkdirPolicy() = %v, %v; want nil, nil", policy, err)
-		}
-	})
-	t.Run("an empty allow list refuses everything", func(t *testing.T) {
-		t.Parallel()
-		store, _ := storeWith("workdirs:\n  allow: []\n")
-		policy, err := store.WorkdirPolicy("/home/me")
-		if err != nil || policy == nil {
-			t.Fatalf("WorkdirPolicy() = %v, %v; want a policy", policy, err)
-		}
-		if got := policy.Check("/home/me/git/app").Verdict; got != pathpolicy.NotAllowed {
-			t.Fatalf("Check() = %d, want NotAllowed", got)
-		}
-	})
-	t.Run("allows the listed roots", func(t *testing.T) {
-		t.Parallel()
-		store, _ := storeWith("workdirs:\n  allow:\n    - path: ~/git\n")
-		policy, err := store.WorkdirPolicy("/home/me")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := policy.Check("/home/me/git/app").Verdict; got != pathpolicy.Allowed {
-			t.Fatalf("Check(/home/me/git/app) = %d, want Allowed", got)
-		}
-		if got := policy.Check("/home/me/other").Verdict; got != pathpolicy.NotAllowed {
-			t.Fatalf("Check(/home/me/other) = %d, want NotAllowed", got)
-		}
-	})
+	}
+	if _, err := NewStore(&fakeFS{}, testkit.Env{HomeErr: errors.New("unset")}).StateDir(); err == nil {
+		t.Error("StateDir() succeeded without a home directory or XDG_STATE_HOME")
+	}
 }

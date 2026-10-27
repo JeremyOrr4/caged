@@ -4,6 +4,7 @@ error: Docker is installed but the daemon is unavailable; start Docker Desktop: 
 leftover temp entries: 0
 === stdout
 === stderr
+caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 Docker is installed but the daemon is unavailable; start Docker Desktop: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?
 === docker invocations
 info

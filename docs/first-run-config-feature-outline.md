@@ -11,7 +11,7 @@ Create a starter Caged configuration for users who do not already have one, and 
 - On the first command that needs Caged's configuration, create the directory and file only if they do not exist.
 - The new file contains commented examples only, preserving current defaults until a user makes changes.
 - Never replace, append to, or change permissions on an existing configuration.
-- Make concurrent first-use creation safe. Return a clear, actionable error if creation fails.
+- Make concurrent first-use creation safe. If the folder cannot be created, warn clearly and go on without it (nothing is mounted); if the folder exists but the file cannot be created or read, return a clear, actionable error.
 - Commands that do not need configuration, such as help, version, and clean, should not create it.
 - Mount the selected host configuration directory read/write at `/home/caged/.config/caged` in runtime containers. Directory mounting allows atomic file-save operations.
 - Respect `--no-config`; do not mount the directory when config mounts are disabled.

@@ -13,6 +13,7 @@ import (
 	"github.com/JeremyOrr4/caged/internal/agent"
 	"github.com/JeremyOrr4/caged/internal/app"
 	"github.com/JeremyOrr4/caged/internal/cli"
+	"github.com/JeremyOrr4/caged/internal/configstage"
 	"github.com/JeremyOrr4/caged/internal/docker"
 	"github.com/JeremyOrr4/caged/internal/hostconfig"
 	"github.com/JeremyOrr4/caged/internal/project"
@@ -33,19 +34,25 @@ func main() {
 func run(ctx context.Context, version string, args []string, stdio system.Stdio, platform system.Platform, agents *agent.Registry) int {
 	fsys, env := system.FS{}, system.Env{}
 	store := userconfig.NewStore(fsys, env)
-	configs := hostconfig.NewResolver(fsys, env, agents.All(), hostconfig.DefaultSharedFiles(), store)
-	projects := project.NewResolver(fsys, store)
+	guard := app.NewConfigGuard(app.GuardDeps{
+		Init: store, Content: store, Approvals: userconfig.NewApprovals(fsys, env, store),
+		In: stdio.In, Out: stdio.Err, Interactive: system.IsTerminal(stdio.In),
+	})
+	configs := hostconfig.NewResolver(hostconfig.Deps{FS: fsys, Env: env, Agents: agents.All(), Shared: hostconfig.DefaultSharedFiles(), Policies: store, ConfigDirs: store, FoldCase: platform.FoldsCase()})
+	projects := project.NewResolver(fsys, store, platform.FoldsCase())
 	planner := app.NewPlanner(env, projects, configs)
-	client := docker.NewClient(system.Executor{}, fsys, platform, stdio)
+	client := docker.NewClient(docker.Deps{Exec: system.Executor{}, FS: fsys, Stager: configstage.New(fsys), Platform: platform, Stdio: stdio})
 	ensurer := app.NewImageEnsurer(client, version)
 	services := cli.Services{
-		Run:   app.NewRunner(store, planner, client, ensurer, client, stdio.Err),
-		Build: app.NewBuilder(store, client, ensurer, stdio.Err),
-		Doctor: app.NewDoctor(app.DoctorDeps{
+		Run: app.GuardedRunner{Guard: guard, Next: app.NewRunner(app.RunnerDeps{
+			Extensions: store, Planner: planner, Daemon: client, Ensurer: ensurer, Containers: client, Stderr: stdio.Err,
+		})},
+		Build: app.GuardedBuilder{Guard: guard, Next: app.NewBuilder(store, client, ensurer, stdio.Err)},
+		Doctor: app.GuardedDoctor{Guard: guard, Next: app.NewDoctor(app.DoctorDeps{
 			Daemon: client, Store: client, Prober: client, Extensions: store, Config: store, Configs: configs,
 			Project: projects, Env: env, Host: app.Host{OS: platform.OS, Arch: platform.Arch}, Version: version,
-		}),
-		List:  app.NewLister(env, configs, agents.All()),
+		})},
+		List:  app.GuardedLister{Guard: guard, Next: app.NewLister(env, configs, agents.All())},
 		Clean: app.NewCleaner(client, client, client),
 	}
 

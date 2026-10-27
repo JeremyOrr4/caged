@@ -4,6 +4,7 @@ error: inspect working directory "$ROOT/work/missing": stat $ROOT/work/missing: 
 leftover temp entries: 0
 === stdout
 === stderr
+caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 WARNING: allowlisted agent credentials are available inside the container.
 inspect working directory "$ROOT/work/missing": stat $ROOT/work/missing: no such file or directory
 === docker invocations

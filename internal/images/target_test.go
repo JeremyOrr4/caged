@@ -1,6 +1,7 @@
 package images
 
 import (
+	"maps"
 	"reflect"
 	"testing"
 
@@ -39,22 +40,20 @@ func TestTargetAssess(t *testing.T) {
 	base := Base("0.2.0")
 	hash := ContextHash(base.Files)
 	current := map[string]string{LabelRole: "runtime", LabelRuntimeHash: hash, LabelVersion: "0.2.0"}
-	with := func(key, value string) map[string]string {
-		labels := map[string]string{}
-		for k, v := range current {
-			labels[k] = v
-		}
-		labels[key] = value
-		return labels
+	// with and without return a copy of labels with one key set or removed.
+	with := func(labels map[string]string, key, value string) map[string]string {
+		copied := maps.Clone(labels)
+		copied[key] = value
+		return copied
 	}
-	without := func(key string) map[string]string {
-		labels := with(key, "")
-		delete(labels, key)
-		return labels
+	without := func(labels map[string]string, key string) map[string]string {
+		copied := maps.Clone(labels)
+		delete(copied, key)
+		return copied
 	}
-	extension := Target{Role: RoleExtension, Ref: ExtensionRef, Identity: []plan.Label{
+	extension := Target{role: RoleExtension, Ref: ExtensionRef, Identity: []plan.Label{
 		{Key: LabelRole, Value: "extension"}, {Key: LabelExtensionHash, Value: "ext-hash"}, {Key: LabelBaseID, Value: "sha256:base"},
-	}, Version: "0.2.0"}
+	}, version: "0.2.0"}
 	extLabels := map[string]string{LabelRole: "extension", LabelExtensionHash: "ext-hash", LabelBaseID: "sha256:base", LabelVersion: "0.2.0"}
 
 	tests := []struct {
@@ -67,39 +66,18 @@ func TestTargetAssess(t *testing.T) {
 		{name: "not found", target: base, found: false, want: Freshness{State: StateMissing}},
 		{name: "not found ignores labels", target: base, labels: current, found: false, want: Freshness{State: StateMissing}},
 		{name: "no labels at all", target: base, labels: nil, found: true, want: Freshness{State: StateUnlabeled}},
-		{name: "role label missing", target: base, labels: without(LabelRole), found: true, want: Freshness{State: StateUnlabeled, BuiltBy: "0.2.0"}},
-		{name: "hash label missing", target: base, labels: without(LabelRuntimeHash), found: true, want: Freshness{State: StateUnlabeled, BuiltBy: "0.2.0"}},
+		{name: "role label missing", target: base, labels: without(current, LabelRole), found: true, want: Freshness{State: StateUnlabeled, BuiltBy: "0.2.0"}},
+		{name: "hash label missing", target: base, labels: without(current, LabelRuntimeHash), found: true, want: Freshness{State: StateUnlabeled, BuiltBy: "0.2.0"}},
 		{name: "hash differs, other version", target: base, labels: map[string]string{LabelRole: "runtime", LabelRuntimeHash: "old", LabelVersion: "0.1.0"}, found: true, want: Freshness{State: StateChanged, BuiltBy: "0.1.0"}},
-		{name: "hash differs, same version", target: base, labels: with(LabelRuntimeHash, "old"), found: true, want: Freshness{State: StateChanged, BuiltBy: "0.2.0"}},
-		{name: "version label missing, hash matches", target: base, labels: without(LabelVersion), found: true, want: Freshness{State: StateCurrent}},
-		{name: "role differs", target: base, labels: with(LabelRole, "extension"), found: true, want: Freshness{State: StateChanged, BuiltBy: "0.2.0"}},
+		{name: "hash differs, same version", target: base, labels: with(current, LabelRuntimeHash, "old"), found: true, want: Freshness{State: StateChanged, BuiltBy: "0.2.0"}},
+		{name: "version label missing, hash matches", target: base, labels: without(current, LabelVersion), found: true, want: Freshness{State: StateCurrent}},
+		{name: "role differs", target: base, labels: with(current, LabelRole, "extension"), found: true, want: Freshness{State: StateChanged, BuiltBy: "0.2.0"}},
 		{name: "current", target: base, labels: current, found: true, want: Freshness{State: StateCurrent, BuiltBy: "0.2.0"}},
-		{name: "current built by another version", target: base, labels: with(LabelVersion, "0.1.0"), found: true, want: Freshness{State: StateCurrent, BuiltBy: "0.1.0"}},
+		{name: "current built by another version", target: base, labels: with(current, LabelVersion, "0.1.0"), found: true, want: Freshness{State: StateCurrent, BuiltBy: "0.1.0"}},
 		{name: "extension current", target: extension, labels: extLabels, found: true, want: Freshness{State: StateCurrent, BuiltBy: "0.2.0"}},
-		{name: "extension hash differs", target: extension, labels: func() map[string]string {
-			l := map[string]string{}
-			for k, v := range extLabels {
-				l[k] = v
-			}
-			l[LabelExtensionHash] = "x"
-			return l
-		}(), found: true, want: Freshness{State: StateChanged, BuiltBy: "0.2.0"}},
-		{name: "extension base id differs", target: extension, labels: func() map[string]string {
-			l := map[string]string{}
-			for k, v := range extLabels {
-				l[k] = v
-			}
-			l[LabelBaseID] = "sha256:other"
-			return l
-		}(), found: true, want: Freshness{State: StateChanged, BuiltBy: "0.2.0"}},
-		{name: "extension without a base id is stale", target: extension, labels: func() map[string]string {
-			l := map[string]string{}
-			for k, v := range extLabels {
-				l[k] = v
-			}
-			delete(l, LabelBaseID)
-			return l
-		}(), found: true, want: Freshness{State: StateChanged, BuiltBy: "0.2.0"}},
+		{name: "extension hash differs", target: extension, labels: with(extLabels, LabelExtensionHash, "x"), found: true, want: Freshness{State: StateChanged, BuiltBy: "0.2.0"}},
+		{name: "extension base id differs", target: extension, labels: with(extLabels, LabelBaseID, "sha256:other"), found: true, want: Freshness{State: StateChanged, BuiltBy: "0.2.0"}},
+		{name: "extension without a base id is stale", target: extension, labels: without(extLabels, LabelBaseID), found: true, want: Freshness{State: StateChanged, BuiltBy: "0.2.0"}},
 		{name: "extension with only the base's labels is unlabeled", target: extension, labels: current, found: true, want: Freshness{State: StateUnlabeled, BuiltBy: "0.2.0"}},
 	}
 	for _, tt := range tests {
@@ -148,7 +126,7 @@ func TestTargetDescribeAndWrapBuildError(t *testing.T) {
 		t.Fatalf("Describe() = %q, want %q", got, want)
 	}
 	boom := errTest("boom")
-	if got := target.WrapBuildError(boom); got != boom {
+	if got := target.WrapBuildError(boom); got != boom { //nolint:errorlint // asserts the error is returned unchanged, not wrapped
 		t.Fatalf("WrapBuildError() = %v, want the error unchanged", got)
 	}
 }

@@ -76,15 +76,3 @@ func parseInfo(docker, output string) (engine.DaemonInfo, error) {
 	}
 	return engine.DaemonInfo{CLIPath: docker, ServerVersion: fields[0], OperatingSystem: fields[1], Arch: arch}, nil
 }
-
-// looksLikeMissingImage recognizes docker's "no such image" reply.
-func looksLikeMissingImage(stderr string) bool {
-	return strings.Contains(strings.ToLower(stderr), "no such image")
-}
-
-// looksLikeImageInUse recognizes docker's refusal to remove an image that a
-// container or another tag still uses.
-func looksLikeImageInUse(stderr string) bool {
-	stderr = strings.ToLower(stderr)
-	return strings.Contains(stderr, "conflict") || strings.Contains(stderr, "being used") || strings.Contains(stderr, "is using")
-}

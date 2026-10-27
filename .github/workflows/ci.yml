@@ -74,19 +74,40 @@ jobs:
       - name: Build for darwin and linux, amd64 and arm64
         run: make cross-build
 
+  commit-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Check PR title and commit messages
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: bash scripts/check-pr-commits.sh
+
   release-script-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Test release scripts
+      - name: Test release and PR policy scripts
         run: make test-release-scripts
 
-  # ci-ok is the one required status check. It fails unless every quality job
+  # ci-ok is the one required status check. It fails unless every job
   # succeeded: a skipped or cancelled job counts as a failure.
   ci-ok:
     if: always()
-    needs: [check, lint, vuln, cross-build, release-script-tests]
+    needs: [check, lint, vuln, cross-build, commit-lint, release-script-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

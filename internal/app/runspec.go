@@ -29,6 +29,7 @@ func buildRunSpec(in runInputs) (plan.RunSpec, error) {
 	configCopies := append([]plan.ConfigMount(nil), in.Configs...)
 	for i := range configCopies {
 		configCopies[i].MaskPaths = append([]string(nil), configCopies[i].MaskPaths...)
+		configCopies[i].MaskFiles = append([]string(nil), configCopies[i].MaskFiles...)
 	}
 	spec := plan.RunSpec{Image: in.Image, Command: []string{"bash"}, Mount: mountCopy, Ports: append([]plan.Port(nil), in.Ports...), ConfigMounts: configCopies, EnvVars: append([]string(nil), in.Env...)}
 	if in.Agent == nil {

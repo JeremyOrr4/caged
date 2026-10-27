@@ -16,6 +16,7 @@ config: pass $ROOT/home/.config/gh -> /home/caged/.config/gh
 config: pass $ROOT/home/dotfiles/pi -> /home/caged/.config/pi (via link $ROOT/home/.config/pi)
 config: pass $ROOT/home/.pi -> /home/caged/.pi
 config: pass $ROOT/home/.gitconfig -> /home/caged/.gitconfig
+config: pass $ROOT/home/.config/caged -> /home/caged/.config/caged
 env: skipped ANTHROPIC_API_KEY (unset or disallowed)
 env: skipped OPENAI_API_KEY (unset or disallowed)
 env: skipped GEMINI_API_KEY (unset or disallowed)
@@ -69,6 +70,8 @@ $ROOT/home/dotfiles/pi:/home/caged/.config/pi
 $ROOT/home/.pi:/home/caged/.pi
 -v
 $ROOT/home/.gitconfig:/home/caged/.gitconfig:ro
+-v
+$ROOT/home/.config/caged:/home/caged/.config/caged
 -e
 CAGED_RETURN_TO_SHELL=1
 caged-runtime:latest

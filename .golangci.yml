@@ -8,6 +8,42 @@ linters:
     - staticcheck
     - unused
     - misspell
+    # The ratchet: small functions, no copy-paste, wrapped errors, documented exports.
+    - funlen
+    - gocyclo
+    - nestif
+    - dupl
+    - errorlint
+    - revive
+  settings:
+    funlen:
+      lines: 40
+      statements: 40
+      ignore-comments: true
+    gocyclo:
+      min-complexity: 15
+    nestif:
+      min-complexity: 4
+    dupl:
+      threshold: 100
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: unused-parameter
+        - name: redefines-builtin-id
+  exclusions:
+    rules:
+      # Table-driven tests are long and branchy by design.
+      - path: _test\.go
+        linters:
+          - funlen
+          - gocyclo
+issues:
+  # Show every finding: a ratchet at zero should hide nothing.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false
 formatters:
   enable:
     - gofmt

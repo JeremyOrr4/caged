@@ -9,7 +9,8 @@ Usage:
   caged build [flags]
 
 Flags:
-  -h, --help       help for build
-      --no-cache   build without using the Docker cache
+  -h, --help           help for build
+      --no-cache       build without using the Docker cache
+      --trust-config   approve a changed config.yaml without asking (for scripts)
 === stderr
 === docker invocations

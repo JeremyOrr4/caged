@@ -106,7 +106,7 @@ func TestBuildRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			request, err := buildRequest(agent.Builtin(), tt.flags, tt.args)
+			request, err := buildRequest(agent.Builtin(), tt.flags, tt.args, nil)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("buildRequest(%v) error = %v, want %q", tt.args, err, tt.wantErr)
@@ -153,7 +153,7 @@ func TestAgentNamesDoNotCollideWithSubcommands(t *testing.T) {
 	t.Parallel()
 
 	// "shared" is not a subcommand: it is the owner name of shared config
-	// mounts (hostconfig.SharedOwner), so no agent may use it either.
+	// mounts (plan.SharedOwner), so no agent may use it either.
 	subcommands := map[string]struct{}{"build": {}, "list": {}, "doctor": {}, "clean": {}, "help": {}, "completion": {}, "shared": {}}
 	for _, name := range agent.Builtin().Names() {
 		if _, ok := subcommands[name]; ok {

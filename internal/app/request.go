@@ -7,6 +7,7 @@ type Request struct {
 	Agent                                       *agent.Agent
 	Prompt                                      *string
 	NoMount, NoConfig, Verbose, AllowBroadMount bool
+	TrustConfig                                 bool // approve a changed config.yaml without asking
 	WorkDir                                     string
 	EnvVars                                     []string
 	Ports                                       []string // -p values, parsed by the planner

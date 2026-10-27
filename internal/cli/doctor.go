@@ -19,14 +19,15 @@ func newDoctorCmd(service DoctorService) *cobra.Command {
 			"anything, and never prints an environment value.",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			report := service.Diagnose(cmd.Context(), opts)
 			out := cmd.OutOrStdout()
-			if _, err := fmt.Fprintln(out, report.Header); err != nil {
+			// details name paths a container can choose; app.PrintableLine keeps them on their line
+			if _, err := fmt.Fprintln(out, app.PrintableLine(report.Header)); err != nil {
 				return err
 			}
 			for _, result := range report.Results {
-				if _, err := fmt.Fprintf(out, "%-5s %-10s %s\n", result.Status, result.Name, result.Detail); err != nil {
+				if _, err := fmt.Fprintf(out, "%-5s %-10s %s\n", result.Status, result.Name, app.PrintableLine(result.Detail)); err != nil {
 					return err
 				}
 			}

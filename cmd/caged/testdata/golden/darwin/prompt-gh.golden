@@ -4,6 +4,7 @@ error: gh does not support prompt launch
 leftover temp entries: 0
 === stdout
 === stderr
+caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 WARNING: allowlisted agent credentials are available inside the container.
 gh does not support prompt launch
 === docker invocations

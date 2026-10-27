@@ -18,7 +18,7 @@ func newListCmd(service ListService) *cobra.Command {
 			"its credential environment variables are set. Only names are shown, never values.",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			statuses, err := service.List()
 			if err != nil {
 				return err
@@ -29,7 +29,9 @@ func newListCmd(service ListService) *cobra.Command {
 }
 
 // writeAgentTable prints the agents as aligned columns. An agent with no
-// config shows "not found", and an empty list of variables shows "-".
+// config shows "not found", and an empty list of variables shows "-". The
+// paths and names go through app.PrintableLine, since a config path can hold
+// a tab or a newline; agent names come from the registry.
 func writeAgentTable(out io.Writer, statuses []app.AgentStatus) error {
 	table := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	if _, err := fmt.Fprintln(table, "AGENT\tCONFIG\tAUTH ENV SET"); err != nil {
@@ -43,7 +45,7 @@ func writeAgentTable(out io.Writer, statuses []app.AgentStatus) error {
 		if len(status.EnvSet) > 0 {
 			env = strings.Join(status.EnvSet, ", ")
 		}
-		if _, err := fmt.Fprintf(table, "%s\t%s\t%s\n", status.Name, config, env); err != nil {
+		if _, err := fmt.Fprintf(table, "%s\t%s\t%s\n", status.Name, app.PrintableLine(config), app.PrintableLine(env)); err != nil {
 			return err
 		}
 	}

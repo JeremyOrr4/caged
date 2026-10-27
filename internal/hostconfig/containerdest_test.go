@@ -1,6 +1,10 @@
 package hostconfig
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/JeremyOrr4/caged/internal/plan"
+)
 
 func TestContainerLinkDest(t *testing.T) {
 	t.Parallel()
@@ -21,6 +25,10 @@ func TestContainerLinkDest(t *testing.T) {
 		{name: "absolute path inside a root", text: "/Users/me/dot/a", roots: []string{"/Users/me"}, want: "/Users/me/dot/a", ok: true},
 		{name: "absolute path outside every root", text: "/other/a", roots: []string{"/Users/me"}},
 		{name: "absolute path under the container home is reserved", text: "/home/caged/x", roots: []string{"/home"}},
+		{name: "absolute path holding the container home", text: "/home", roots: []string{"/home"}},
+		{name: "absolute path holding every system directory", text: "/", roots: []string{"/"}},
+		{name: "absolute path beside the container home", text: "/home/other", roots: []string{"/home"}, want: "/home/other", ok: true},
+		{name: "absolute path sharing a prefix with a reserved path", text: "/hom", roots: []string{"/"}, want: "/hom", ok: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -33,6 +41,8 @@ func TestContainerLinkDest(t *testing.T) {
 	}
 }
 
+// TestWithinSlash keeps its name from the deleted withinSlash: this package's
+// container-path containment is now plan.ContainerRel (W3-T7, D-01).
 func TestWithinSlash(t *testing.T) {
 	t.Parallel()
 
@@ -46,8 +56,8 @@ func TestWithinSlash(t *testing.T) {
 		{"/anything", "/", true},
 		{"/home", "/home/caged", false},
 	} {
-		if got := withinSlash(tt.path, tt.root); got != tt.want {
-			t.Errorf("withinSlash(%q, %q) = %v, want %v", tt.path, tt.root, got, tt.want)
+		if _, got := plan.ContainerRel(tt.path, tt.root); got != tt.want {
+			t.Errorf("ContainerRel(%q, %q) inside = %v, want %v", tt.path, tt.root, got, tt.want)
 		}
 	}
 }

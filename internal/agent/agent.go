@@ -14,15 +14,22 @@ type ConfigPath struct {
 	Writable      bool
 	EnvOverride   string
 	MaskPaths     []string
+	// Staged mounts the path as one tree, so the agent can create files as
+	// well as edit them. Docker reads it from a symlink-free copy made for the
+	// run: symlinks and special files are hidden, allowed symlink targets are
+	// mounted back at their link paths, and the container's changes are
+	// written back to the host when it exits.
+	Staged bool
 }
 
 // PromptStyle says how an agent accepts an initial prompt on its command line.
 type PromptStyle int
 
+// The prompt styles. The values are part of the agent golden file.
 const (
-	PromptNone PromptStyle = iota
-	PromptPositional
-	PromptFlag
+	PromptNone       PromptStyle = iota // takes no initial prompt
+	PromptPositional                    // the prompt is one argument right after Command
+	PromptFlag                          // the prompt follows Agent.PromptFlag
 )
 
 // Agent is the complete, data-only definition of a supported agent CLI.

@@ -28,16 +28,17 @@
 | Platform | macOS primary, Docker Desktop only. Linux best-effort. Windows dropped |
 | Language and build | Go. Image built locally from the embedded Dockerfile on first run |
 | Config mounting | **All** supported CLIs' host configs are mounted **read-write on every run**, so every CLI is ready and changes persist on the host. Missing configs are skipped |
+| Caged's own config | `config.yaml` is created on first use (commented examples only) and its folder is mounted read-write at `/home/caged/.config/caged`. Edits are shown as a diff and need approval on the next run (FR-30 to FR-35) |
 | Project mount | Current folder at `/workspace/<folder-name>`, read-write |
 | After a CLI exits | Drop into a shell in the same container. `exit` removes the container |
 | Logins | API keys via `--env`; subscription logins done once inside the container and persisted by the mount. Keychain extraction deferred |
 | Flag passthrough | `--` passes arguments to the agent unchanged, after the prompt |
-| Prompt launch | `caged <cli> 'prompt'` is wanted (not built yet) |
+| Prompt launch | `caged <cli> 'prompt'` starts the CLI with the prompt, in that CLI's prompt style |
 | Image freshness | Hash label; rebuild automatically; unlabeled = stale |
 | Image extensions | User-level `config.yaml` (`image.apt`), apt only, tag `caged-runtime:ext` |
 | Ports | Opt-in `-p`/`--publish`, bound to 127.0.0.1; no host address or ranges |
 | Distribution | GitHub release binaries, `go install`, and a Homebrew tap (formula built from source) from v0.1.0 |
-| Refactor | Free to restructure and change flags (unreleased project) |
+| Refactor | Restructuring keeps behaviour: flags, help and output text, exit codes, docker arguments and file formats stay as they are (the golden tests in `cmd/caged/testdata` pin them) |
 | Later | GitHub CLI and more harnesses |
 
 ## 3. Implemented
@@ -48,7 +49,7 @@ caged 0.1.0 does what the intended workflow in Section 2 describes:
   `caged <cli>` launches that CLI, `caged <cli> 'prompt'` launches it with a prompt, and after the CLI exits you are
   in a shell in the same container.
 - The project folder is mounted read-write at `/workspace/<folder-name>`; `/` and the bare home directory are refused
-  unless `--allow-broad-mount`.
+  unless `--allow-broad-mount`. A project or config path containing `:` is refused, because Docker's `-v` splits at it.
 - The host configs of **all** supported CLIs are mounted read-write on every run, so every CLI is ready and changes
   persist. Missing configs are skipped; unsafe paths are refused. The GitHub CLI (`gh`) is included.
 - One image holds all CLIs. It is built locally from an embedded Dockerfile, labeled with a hash of its build files,
@@ -71,7 +72,7 @@ caged 0.1.0 does what the intended workflow in Section 2 describes:
 
 ## 3A. macOS Is the Primary Platform
 
-**Decided:** macOS is the primary target and **Docker Desktop is the supported runtime for v1** (Apple Silicon first, Intel supported). Linux is best-effort. Windows is out of scope, so the Windows branch in `buildArgs` can go. OrbStack and Colima may work but are untested and unsupported.
+**Decided:** macOS is the primary target and **Docker Desktop is the supported runtime for v1** (Apple Silicon first, Intel supported). Linux is best-effort. Windows is out of scope, and caged has no Windows code path. OrbStack and Colima may work but are untested and unsupported.
 
 The repo was written Linux-first, and several things behave differently on a Mac. Items marked **[VERIFY]** should be tested on a real Mac before we build on them.
 
@@ -82,9 +83,9 @@ The repo was written Linux-first, and several things behave differently on a Mac
 | M3 | **Gemini** credentials: `~/.gemini/oauth_creds.json` today | **[VERIFY]** that newer versions don't use the Keychain. `GEMINI_API_KEY` works either way | Same options as M1 |
 | M4 | **Browser login inside the container does not work well.** Login flows start a callback server on `localhost` (Codex uses port 1455) and try to open a browser. Neither reaches your Mac without publishing ports, and there's no `open` in the container | Fresh-install logins are painful, which strengthens the case for forwarding auth from the host | Prefer device-code flow, API keys/tokens, or host-side extraction |
 | M5 | **Docker runtime differs** between Docker Desktop, OrbStack and Colima | Behavior varies | **Decided:** Docker Desktop only for v1. Error messages should say "start Docker Desktop" |
-| M6 | **UID/GID mapping.** Today caged passes `--user 501:20` on macOS whenever configs are mounted. UID 501 doesn't exist in the image, which is likely why the image does `chmod 0777` on `/home/caged` and config dirs | On Docker Desktop and OrbStack, bind-mount ownership is translated automatically, so `--user` is probably unnecessary on a Mac **[VERIFY per runtime, Colima especially]** | Run as the image's `caged` user on macOS; remove the `0777` workaround if tests pass |
+| M6 | **UID/GID mapping.** On Linux caged passes `--user <host UID>:<host GID>`, a user that does not exist in the image, which is why the image does `chmod 0777` on `/home/caged` and the config dirs | On Docker Desktop, bind-mount ownership is translated automatically, so `--user` is unnecessary on a Mac **[VERIFY on other runtimes, Colima especially]** | **Done:** macOS keeps the image's `caged` user (no `--user`); the `0777` workaround stays for Linux |
 | M7 | **Apple Silicon = `linux/arm64` image.** Every installer must publish arm64 builds, and the image must not silently fall back to amd64 emulation | Slow or broken installs | Build locally (already the case) so the arch matches the host. Check each installer on arm64; checked by `caged doctor` |
-| M8 | **Single-file bind mount of `~/.claude.json`.** If Claude replaces the file via write-temp-then-rename, renaming over a bind-mounted file fails with "device or resource busy" **[VERIFY]** | Config writes fail, or onboarding state is lost | Test. Alternative: point `CLAUDE_CONFIG_DIR` at the mounted `~/.claude` dir so the JSON lives inside a directory mount (trade-off: no longer shared with the host's `~/.claude.json`) **[VERIFY]** |
+| M8 | **Single-file bind mount of `~/.claude.json`.** If Claude replaces the file via write-temp-then-rename, renaming over a bind-mounted file fails with "device or resource busy" | Config writes fail, or onboarding state is lost | **Done:** `CLAUDE_CONFIG_DIR` points at the mounted `~/.claude` dir, so the JSON lives inside a directory mount; the host's `~/.claude.json` is not shared |
 | M9 | **Docker Desktop shares only some host paths by default** (`/Users`, `/Volumes`, `/private`, `/tmp`, `/var/folders`) | A project on another path gives a confusing mount error | Detect and print a hint; checked by `caged doctor` |
 | M10 | **Bind-mount file I/O is slower** on macOS than on Linux, especially for huge `node_modules` trees | Not a blocker, but sets expectations | Document it |
 | M11 | **`localhost` in the container is not your Mac.** A dev server started by the agent isn't reachable from the host | Common surprise | **Decided:** `-p` publishes on 127.0.0.1; servers must listen on 0.0.0.0. Documented in the README |
@@ -122,7 +123,7 @@ Config mounting alone gives a logged-in session on Linux but not on a Mac, so we
 - A hardened security boundary against a hostile agent. It limits blast radius; it is not a VM. (Section 9)
 - Remote or cloud execution, GUI, multi-session orchestration.
 - OrbStack/Colima/Windows support, and Keychain extraction (all deferred).
-- Local-LLM wiring. The permanent `caged` config file is `~/.config/caged/config.yaml`, which holds `image.apt`, the symlink policy (`links`), and `workdirs`; no other settings are read from a file.
+- Local-LLM wiring. The permanent `caged` config file is `~/.config/caged/config.yaml`, which holds `image.apt`, the symlink policy (`links`), and `workdirs`; no other settings are read from a file. The file is created on first use and its folder is mounted read-write (FR-30 to FR-35).
 
 ## 5. User-Facing Interface
 
@@ -140,7 +141,7 @@ Config mounting alone gives a logged-in session on Linux but not on a Mac, so we
 
 ### 5.2 Flags (existing)
 
-`--no-mount`, `--workdir/-w`, `--allow-broad-mount`, `--no-config`, `--verbose`, `--env NAME` (repeatable), `-p/--publish PORT|HOST_PORT:CONTAINER_PORT` (repeatable).
+`--no-mount`, `--workdir/-w`, `--allow-broad-mount`, `--no-config`, `--trust-config`, `--verbose`, `--env NAME` (repeatable), `-p/--publish PORT|HOST_PORT:CONTAINER_PORT` (repeatable), `--version/-v`, `--help/-h`. `caged build` takes `--no-cache` and `--trust-config`, `caged doctor` takes `-w`, and `caged clean` takes `--dry-run`.
 
 ### 5.3 Supported CLIs
 
@@ -164,16 +165,16 @@ The prompt style differs per tool, so the registry needs a per-agent "how to pas
 |---|---|---|
 | FR-1 | Single image containing all CLIs | DONE |
 | FR-2 | Image built on first run if missing, and rebuilt when its runtime-hash label does not match the binary | DONE |
-| FR-3 | Container runs as non-root user `caged`. Linux: host UID/GID mapped. macOS: mapping probably unnecessary (see M6) | PARTIAL |
+| FR-3 | Container runs as a non-root user. Linux: the host UID/GID (`--user`). macOS: the image's `caged` user, since Docker Desktop translates ownership (M6) | DONE |
 | FR-4 | Container is interactive (TTY) and removed on exit | DONE |
 | FR-5 | CLI versions are latest at build time (`caged build --no-cache` to update), recorded in `/opt/caged/versions`, and shown by `caged doctor` | DONE (pinning is deferred) |
-| FR-6 | Clear error when Docker is installed but the daemon is not running (today only "docker not found" is checked). On macOS the message should say to start Docker Desktop / OrbStack / Colima | DONE |
+| FR-6 | Clear error when Docker is not installed, and when it is installed but the daemon is not running. On macOS the message says to start Docker Desktop | DONE |
 
 ### 6.2 Project mount
 | ID | Requirement | Status |
 |---|---|---|
 | FR-7 | CWD bind-mounted read-write; container workdir set to it | DONE (path changes per FR-8) |
-| FR-8 | The project mounts at `/workspace/<name of the current folder>`, e.g. running in `~/code/my-app` gives `/workspace/my-app`. The container's working directory is that path | **MISSING** (today: fixed `/workspace`). Two folders with the same name are separate runs, so no clash |
+| FR-8 | The project mounts at `/workspace/<name of the current folder>`, e.g. running in `~/code/my-app` gives `/workspace/my-app`. The container's working directory is that path. Two folders with the same name are separate runs, so no clash | DONE |
 | FR-9 | Refuse `/` and `$HOME` unless explicitly overridden | DONE |
 | FR-10 | Files created are owned by the host user | DONE |
 
@@ -192,13 +193,19 @@ else:
 
 | ID | Requirement | Status |
 |---|---|---|
-| FR-11 | Existing host config is mounted **read-write** for every supported CLI so changes persist on the host | **MISSING** (only Pi today) |
-| FR-12 | Missing host config is skipped and never created on the host | DONE |
-| FR-13 | Symlinks in agent config are followed on the host and their targets mounted where the links point; a target outside the link's own config folder must be under `links.allow`, and the built-in deny list always wins; sockets and special files are never exposed | DONE |
+| FR-11 | Existing host config is mounted **read-write** for every supported CLI so changes persist on the host (`Writable` on each `agent.ConfigPath`; a Pi tree that needs masks or nested link mounts runs from a staged copy that is written back, FR-13) | DONE |
+| FR-12 | Missing host config is skipped and never created on the host (caged's own `config.yaml` is the one exception, FR-30) | DONE |
+| FR-13 | Symlinks in agent config are followed on the host and their targets mounted where the links point; a target outside the link's own config folder must be under `links.allow`, and the built-in deny list always wins, for a config folder that is not a symlink too; sockets and special files are never exposed | DONE |
 | FR-14 | `--no-config` disables all config mounts | DONE |
 | FR-15 | There is no `--no-auth`: with direct read-write mounts it could only mean "mount no configs", which `--no-config` already does | DONE (flag removed) |
 | FR-16 | Every run mounts the existing config for **all** supported CLIs (plain `caged` included), so you can switch CLIs from the shell | DONE (decided) |
-| FR-17 | Honor config-dir env overrides (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, ...) | MISSING **[VERIFY]** |
+| FR-30 | The first command that needs config (run, build, doctor, list) creates `~/.config/caged/` (0700) and a starter `config.yaml` (0600, commented examples only) when there is none; `$XDG_CONFIG_HOME/caged/` when `XDG_CONFIG_HOME` is absolute. An existing file is never replaced, appended to, or re-permissioned; concurrent creation is safe; a folder that cannot be created is an actionable warning and the command goes on without it, while a file that cannot be written into an existing folder, or a `config.yaml` that exists but cannot be read, is an actionable error. help, version, clean and `--no-config` never create it | DONE |
+| FR-31 | The selected config folder, even outside home, is mounted read-write at `/home/caged/.config/caged` (a directory mount, so atomic saves work); it is not mounted with `--no-config`, and is never in the image or build context | DONE |
+| FR-32 | A symlinked config folder or `config.yaml` is followed only when its target is under `links.allow` (`read_only` honored); the built-in deny of caged's config folder (wherever `XDG_CONFIG_HOME` puts it) still refuses links from agent config into it, and the folder itself must not be the home directory, touch a denied path, or overlap the approval state folder (`XDG_CONFIG_HOME` equal to `XDG_STATE_HOME`) | DONE |
+| FR-33 | caged keeps the last approved copy of `config.yaml` in `$XDG_STATE_HOME/caged` (never mounted). A changed file is shown as a diff before the command goes on, and needs `y` at a terminal or `--trust-config`; otherwise the command stops | DONE |
+| FR-34 | `doctor` and `list` show a pending change but never ask and never approve a change (like run and build, they record the first copy, FR-35); `--no-config` still reviews the file | DONE |
+| FR-35 | The first copy caged sees (including the starter file it created) is recorded without asking; when that record cannot be written, `doctor` and `list` warn and go on | DONE |
+| FR-17 | Honor config-dir env overrides (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`); an override that resolves outside home or names a denied folder is refused | DONE |
 
 Two more things to be aware of with direct mounts:
 - Claude's `~/.claude.json` is a **single file**. Single-file bind mounts can break when a tool replaces the file instead of editing it in place (a write-temp-then-rename pattern). Needs testing. **[VERIFY]**
@@ -208,8 +215,8 @@ Two more things to be aware of with direct mounts:
 | ID | Requirement | Status |
 |---|---|---|
 | FR-18 | `caged <cli>` starts that CLI in the project dir | DONE |
-| FR-19 | `caged <cli> '<prompt>'` starts it with the prompt, passed verbatim (no shell re-interpretation) | MISSING |
-| FR-20 | Registry declares how each CLI accepts an initial prompt | MISSING |
+| FR-19 | `caged <cli> '<prompt>'` starts it with the prompt, passed verbatim (no shell re-interpretation) | DONE |
+| FR-20 | Registry declares how each CLI accepts an initial prompt (`Agent.Prompt`, `Agent.PromptFlag`) | DONE |
 | FR-21 | Arguments after `--` are passed to the agent unchanged, after the prompt, never through a shell (`caged claude -- --resume`) | DONE |
 | FR-22 | After the CLI exits, drop into a shell in the same container; `exit` ends it | DONE (decided) |
 
@@ -225,13 +232,13 @@ Two more things to be aware of with direct mounts:
 ### 6.6 Extensibility and later items
 | ID | Requirement | Status |
 |---|---|---|
-| FR-28 | Adding a CLI = one registry entry + one image install step; no core-logic change | PARTIAL: the registry is data, but `Writable: agent.Name == "pi"` is hard-coded in the resolver, and the install step is hand-edited in a single `RUN` line |
+| FR-28 | Adding a CLI = one registry entry + one image install step; no core-logic change | DONE: one file in `internal/agent` and one line in its `builtin.go`, plus an install step in `internal/images/Dockerfile` (architecture.md, "Adding a new agent") |
 | FR-29 | GitHub CLI installed in image, auth via `~/.config/gh` mount or token | DONE |
-| FR-30 | Other harnesses/tools via the registry | MISSING (later) |
-| FR-31 | Publish container ports on 127.0.0.1 with repeatable `-p`, validated before Docker runs | DONE |
-| FR-33 | `caged doctor` runs the checks docker, daemon, image, config, links, ext-image, arch, project and versions in order; a check that depends on a failed one is skipped; it exits 1 only when a check fails and never builds, pulls, or removes anything | DONE |
-| FR-34 | `caged clean [--dry-run]` removes caged's images, extension first, never with `-f`; an image in use is kept and reported | DONE |
-| FR-32 | Extra apt packages from `image.apt` in a user-level `config.yaml`, built as `caged-runtime:ext` on top of the runtime image, validated before Docker runs | DONE |
+| FR-36 | Other harnesses/tools via the registry | MISSING (later) |
+| FR-37 | Publish container ports on 127.0.0.1 with repeatable `-p`, validated before Docker runs | DONE |
+| FR-38 | `caged doctor` runs the checks docker, daemon, image, config, links, ext-image, arch, project and versions in order; a check that depends on a failed one is skipped; it exits 1 only when a check fails and never builds, pulls, or removes anything | DONE |
+| FR-39 | `caged clean [--dry-run]` removes caged's images, extension first, never with `-f`; an image in use is kept and reported | DONE |
+| FR-40 | Extra apt packages from `image.apt` in a user-level `config.yaml`, built as `caged-runtime:ext` on top of the runtime image, validated before Docker runs | DONE |
 
 ## 7. Non-Functional Requirements
 
@@ -243,7 +250,7 @@ Two more things to be aware of with direct mounts:
 | NFR-4 | `--verbose` shows exactly what is mounted, which ports are published, and which env names are passed (never values). A `--dry-run` that prints the final `docker run` is easy to add given a pure planner |
 | NFR-5 | No leftovers: no stray containers, temp dirs always cleaned, a replaced runtime image is removed, and `caged clean` removes every caged image |
 | NFR-6 | Core logic (parsing, resolving, planning) is unit-testable without Docker |
-| NFR-7 | `go install` and `make install`, GitHub release binaries (macOS and Linux, amd64 and arm64), and a Homebrew tap with a formula built from source. Tagged releases wire the version in via `-ldflags`; `go install` falls back to the module version |
+| NFR-7 | `go install`, GitHub release binaries (macOS and Linux, amd64 and arm64), and a Homebrew tap with a formula built from source. Tagged releases wire the version in via `-ldflags`; `go install` falls back to the module version |
 
 ## 8. Architecture
 
@@ -251,23 +258,11 @@ The package layout, the dependency rules between packages, and the interfaces ar
 
 ### 8.1 Pipeline
 
-```
- caged codex 'fix tests'
-        |
-  [CLI parse] -> intent {agent, prompt, flags}
-        |
-  [Registry] -> agent definition (command, config paths, env names, prompt style)
-        |
-  [Config resolver] -> which host paths exist/are safe -> mounts + report
-        |
-  [Project mount] -> cwd validated -> /workspace mount (or none)
-        |
-  [Run planner] -> immutable RunSpec {image, mounts, env, user, command}   (pure)
-        |
-  [Docker runner] -> ensure image, `docker run -it --rm ...`, pass exit code
-```
-
-Only the last box talks to Docker. Everything before it is pure and testable.
+The CLI parses the command line into a request; the planner turns it into a `plan.RunSpec` (image, command, project
+mount, ports, config mounts, environment names) from the agent registry, the project resolver and the config resolver;
+only `internal/docker` turns that spec into `docker` commands, and passes the exit code back. Each step is in
+[architecture.md](architecture.md), which follows `caged codex 'fix tests'` from `main` to `docker run`, naming the
+function at each step.
 
 ### 8.2 Registry shape
 
@@ -276,26 +271,27 @@ type Agent struct {
     Name        string
     Command     []string
     Description string
-    Prompt      PromptStyle   // positional | flag("-i") | none
-    ConfigPaths []ConfigPath  // each: host, container, mode(rw|ro), secrets
-    EnvVars     []string
+    ConfigPaths []ConfigPath // each: host path, container path, Writable, Staged, env override, masks
+    Prompt      PromptStyle  // none, positional, or a flag
+    PromptFlag  string       // the flag (or subcommand, as Codex's exec) before the prompt
+    Auth        AuthStrategy // the environment names the agent reads
 }
 ```
 
-Mode (rw or ro) becomes **data on each path**, not an `agent.Name == "pi"` check.
+Mount mode and staging are **data on each path**; no code checks an agent's name.
 
 ## 9. Security Considerations
 
 | Risk | Stance |
 |---|---|
 | Container can modify or delete anything in the project dir | Accepted by design. Recommend git |
-| With FR-11, the container can modify the host's real CLI configs and read their tokens | Accepted by design for CLIs that exist. This is a **behavior change from today** (read-only copies). Make it explicit in the README and in the startup warning |
+| With FR-11, the container can modify the host's real CLI configs and read their tokens | Accepted by design for CLIs that exist. The README says so, and a warning is printed when credentials are available in the container (FR-27) |
 | Docker socket, SSH keys, cloud creds | Never mounted |
 | Privileged mode or extra capabilities | Never |
 | Network | Full access (agents need it) |
 | Published ports | Loopback only, never the LAN |
 | Extension packages | apt only, from the image's configured repositories (Ubuntu, NodeSource, GitHub CLI); names validated; user-level file only, a repository cannot change it |
-| Non-root | Yes, host UID/GID mapped |
+| Non-root | Yes: the host UID/GID on Linux, the image's `caged` user on macOS |
 | Image supply chain | Installers are `curl \| bash` from third-party URLs, unpinned |
 | macOS Keychain extraction (auth option B) | Reads a secret out of the Keychain and places it in a temp file and a container. Must be opt-in, use a `0600` temp file, clean up on exit, and never print the value |
 | `chmod 0777` on `/home/caged` and config dirs in the image | Works around arbitrary UIDs; acceptable for a throwaway container but worth a comment |
@@ -336,6 +332,6 @@ Ordered by how much they change the design.
 12. ~~`caged list`~~ **Decided:** shows detected config and auth env names, never values.
 13. ~~Distribution~~ **Decided:** the tap from the first release (v0.1.0).
 14. **GitHub CLI.** Included in v1 per the user's priority. Install `gh` from GitHub's signed repository and mount `~/.config/gh` read-write like the other CLIs.
-15. **Refactor freedom.** *Assumed default:* yes. The project is unreleased (9 commits), so the cleanup may rename and move code and change or remove flags freely.
+15. ~~Refactor freedom~~ **Decided:** caged is released (v0.1.0), so a refactor may rename and move code but keeps every flag, message, exit code, docker argument and file format; the golden tests pin them.
 16. ~~Docker runtime~~ **Decided:** Docker Desktop only.
 17. ~~Ports~~ **Decided:** `-p`, 127.0.0.1 only.

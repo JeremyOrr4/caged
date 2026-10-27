@@ -9,11 +9,11 @@ import (
 	"github.com/JeremyOrr4/caged/internal/system"
 )
 
-// runArgs translates a run plan into `docker run` arguments.
-func runArgs(spec plan.RunSpec, platform system.Platform, fileMaskSources ...string) []string {
-	fileMaskSource := "/dev/null"
-	if len(fileMaskSources) > 0 && fileMaskSources[0] != "" {
-		fileMaskSource = fileMaskSources[0]
+// runArgs translates a run plan into `docker run` arguments. Masked config
+// files are covered with fileMaskSource, an empty file; "" means /dev/null.
+func runArgs(spec plan.RunSpec, platform system.Platform, fileMaskSource string) []string {
+	if fileMaskSource == "" {
+		fileMaskSource = "/dev/null"
 	}
 	args := []string{"run", "-it", "--rm"}
 	for _, port := range spec.Ports {
@@ -27,19 +27,7 @@ func runArgs(spec plan.RunSpec, platform system.Platform, fileMaskSources ...str
 		)
 	}
 	for _, mount := range spec.ConfigMounts {
-		volume := mount.HostPath + ":" + mount.DestPath
-		if !mount.Writable {
-			volume += ":ro"
-		}
-		args = append(args, "-v", volume)
-		for _, mask := range mount.MaskPaths {
-			maskedPath := strings.TrimSuffix(mount.DestPath, "/") + "/" + strings.TrimPrefix(filepath.ToSlash(mask), "/")
-			args = append(args, "--tmpfs", maskedPath)
-		}
-		for _, mask := range mount.MaskFiles {
-			maskedPath := strings.TrimSuffix(mount.DestPath, "/") + "/" + strings.TrimPrefix(filepath.ToSlash(mask), "/")
-			args = append(args, "-v", fileMaskSource+":"+maskedPath+":ro")
-		}
+		args = append(args, configMountArgs(mount, fileMaskSource)...)
 	}
 	args = append(args, userArgs(platform)...)
 	for _, env := range spec.EnvVars {
@@ -51,6 +39,31 @@ func runArgs(spec plan.RunSpec, platform system.Platform, fileMaskSources ...str
 
 	args = append(args, spec.Image)
 	return append(args, spec.Command...)
+}
+
+// configMountArgs mounts one config mount and then hides its masks inside
+// it: directories under a tmpfs, files under a read-only bind of
+// fileMaskSource. Docker orders mounts by destination depth itself; the
+// argument order here is kept only because the golden command lines pin it.
+func configMountArgs(mount plan.ConfigMount, fileMaskSource string) []string {
+	volume := mount.HostPath + ":" + mount.DestPath
+	if !mount.Writable {
+		volume += ":ro"
+	}
+	args := []string{"-v", volume}
+	for _, mask := range mount.MaskPaths {
+		args = append(args, "--tmpfs", maskTarget(mount.DestPath, mask))
+	}
+	for _, mask := range mount.MaskFiles {
+		args = append(args, "-v", fileMaskSource+":"+maskTarget(mount.DestPath, mask)+":ro")
+	}
+	return args
+}
+
+// maskTarget is the container path of mask, a path relative to the mount
+// destination dest; a leading slash on mask is ignored.
+func maskTarget(dest, mask string) string {
+	return strings.TrimSuffix(dest, "/") + "/" + strings.TrimPrefix(filepath.ToSlash(mask), "/")
 }
 
 // buildArgs translates a build plan into `docker build` arguments for the

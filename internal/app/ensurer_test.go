@@ -124,12 +124,9 @@ func TestEnsurerEnsureBase(t *testing.T) {
 			var out strings.Builder
 			store := tt.store
 			store.calls = &calls
-			ref, err := NewImageEnsurer(&store, version).Ensure(context.Background(), nil, NewReporter(&out, tt.verbose))
-			if err != tt.wantErr {
-				t.Fatalf("Ensure() error = %v, want %v", err, tt.wantErr)
-			}
-			if tt.wantErr == nil && ref != images.BaseRef {
-				t.Fatalf("Ensure() ref = %q, want %q", ref, images.BaseRef)
+			err := NewImageEnsurer(&store, version).ensureImages(context.Background(), nil, NewReporter(&out, tt.verbose))
+			if err != tt.wantErr { //nolint:errorlint // asserts the error is returned unchanged, not wrapped
+				t.Fatalf("ensureImages() error = %v, want %v", err, tt.wantErr)
 			}
 			if !reflect.DeepEqual(calls, tt.wantCalls) {
 				t.Fatalf("calls = %q, want %q", calls, tt.wantCalls)
@@ -153,7 +150,7 @@ func TestEnsurerEnsureExtension(t *testing.T) {
 	const baseID = "sha256:current"
 	ext := testExtension()
 	boom := errors.New("exit status 100")
-	buildNotice := "Building image extension from ~/.config/caged/image.json (apt: neovim, tmux)...\n"
+	buildNotice := "Building image extension from ~/.config/caged/config.yaml (apt: neovim, tmux)...\n"
 	staleExt := engine.ImageInfo{ID: "sha256:old-ext", Labels: map[string]string{
 		images.LabelRole: "extension", images.LabelExtensionHash: "old", images.LabelBaseID: baseID, images.LabelVersion: version,
 	}}
@@ -169,7 +166,6 @@ func TestEnsurerEnsureExtension(t *testing.T) {
 		wantCalls  []string
 		wantErr    string
 		wantOut    string
-		wantRef    string
 		wantBaseID string // the base-id label of the extension build, if one happens
 	}{
 		{
@@ -177,7 +173,6 @@ func TestEnsurerEnsureExtension(t *testing.T) {
 			store:      fakeStore{images: baseImage(currentImage(version))},
 			wantCalls:  []string{inspectBase, inspectExt, buildExt},
 			wantOut:    buildNotice,
-			wantRef:    images.ExtensionRef,
 			wantBaseID: baseID,
 		},
 		{
@@ -185,15 +180,13 @@ func TestEnsurerEnsureExtension(t *testing.T) {
 			store:     fakeStore{images: both(currentImage(version), currentExt)},
 			verbose:   true,
 			wantCalls: []string{inspectBase, inspectExt},
-			wantOut:   "image: " + images.Base(version).Describe() + "\nimage: extension from ~/.config/caged/image.json (apt: neovim, tmux) -> caged-runtime:ext\n",
-			wantRef:   images.ExtensionRef,
+			wantOut:   "image: " + images.Base(version).Describe() + "\nimage: extension from ~/.config/caged/config.yaml (apt: neovim, tmux) -> caged-runtime:ext\n",
 		},
 		{
 			name:       "current base, stale extension: only the extension is rebuilt and the old one removed",
 			store:      fakeStore{images: both(currentImage(version), staleExt)},
 			wantCalls:  []string{inspectBase, inspectExt, buildExt, "remove sha256:old-ext"},
 			wantOut:    buildNotice,
-			wantRef:    images.ExtensionRef,
 			wantBaseID: baseID,
 		},
 		{
@@ -204,7 +197,6 @@ func TestEnsurerEnsureExtension(t *testing.T) {
 			wantCalls: []string{inspectBase, buildBase, inspectExt, buildExt, "remove sha256:current-ext", "remove sha256:old-base"},
 			wantOut: "Runtime image caged-runtime:latest was built by an older caged; rebuilding it once (this can take a few minutes)...\n" +
 				buildNotice,
-			wantRef:    images.ExtensionRef,
 			wantBaseID: "sha256:new-caged-runtime:latest",
 		},
 		{
@@ -212,7 +204,7 @@ func TestEnsurerEnsureExtension(t *testing.T) {
 			store:     fakeStore{images: both(currentImage(version), staleExt), buildErr: map[string]error{images.ExtensionRef: boom}},
 			wantCalls: []string{inspectBase, inspectExt, buildExt},
 			wantOut:   buildNotice,
-			wantErr:   "building the image extension from ~/.config/caged/image.json failed; fix or remove that file: exit status 100",
+			wantErr:   "building the image extension from ~/.config/caged/config.yaml failed; fix or remove that file: exit status 100",
 		},
 		{
 			name:      "a base build failure stops before the extension",
@@ -230,15 +222,9 @@ func TestEnsurerEnsureExtension(t *testing.T) {
 			var out strings.Builder
 			store := tt.store
 			store.calls = &calls
-			ref, err := NewImageEnsurer(&store, version).Ensure(context.Background(), ext, NewReporter(&out, tt.verbose))
+			err := NewImageEnsurer(&store, version).ensureImages(context.Background(), ext, NewReporter(&out, tt.verbose))
 			if (err == nil) != (tt.wantErr == "") || (err != nil && err.Error() != tt.wantErr) {
-				t.Fatalf("Ensure() error = %v, want %q", err, tt.wantErr)
-			}
-			if err == nil && ref != tt.wantRef {
-				t.Fatalf("Ensure() ref = %q, want %q", ref, tt.wantRef)
-			}
-			if err != nil && ref != "" {
-				t.Fatalf("Ensure() ref = %q with an error, want none", ref)
+				t.Fatalf("ensureImages() error = %v, want %q", err, tt.wantErr)
 			}
 			if !reflect.DeepEqual(calls, tt.wantCalls) {
 				t.Fatalf("calls = %q, want %q", calls, tt.wantCalls)
@@ -315,18 +301,18 @@ func TestEnsurerBuildAll(t *testing.T) {
 			var out strings.Builder
 			store := tt.store
 			store.calls = &calls
-			got, err := NewImageEnsurer(&store, version).BuildAll(context.Background(), tt.ext, tt.opts, NewReporter(&out, false))
+			got, err := NewImageEnsurer(&store, version).rebuildImages(context.Background(), tt.ext, tt.opts, NewReporter(&out, false))
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("BuildAll() error = %v, want error: %v", err, tt.wantErr)
+				t.Fatalf("rebuildImages() error = %v, want error: %v", err, tt.wantErr)
 			}
 			if !reflect.DeepEqual(calls, tt.wantCalls) {
 				t.Fatalf("calls = %q, want %q", calls, tt.wantCalls)
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("BuildAll() = %+v, want %+v", got, tt.want)
+				t.Fatalf("rebuildImages() = %+v, want %+v", got, tt.want)
 			}
-			if tt.wantErr && out.String() != "" && tt.ext == nil {
-				t.Fatalf("output = %q, want nothing for a requested build", out.String())
+			if out.String() != "" {
+				t.Fatalf("output = %q, want nothing: a requested build prints no notice, and details need --verbose", out.String())
 			}
 			for _, spec := range store.builds {
 				if spec.NoCache != tt.opts.NoCache {

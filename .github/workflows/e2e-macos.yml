@@ -1,0 +1,46 @@
+# e2e-macos runs the end-to-end suite (dev/e2e) on a Mac with Docker Desktop.
+# GitHub's hosted macOS runners have no Docker, so it needs a self-hosted
+# runner labelled macOS with Docker Desktop running, and it runs only when
+# started by hand. The make check job on macos-latest in ci.yml is unchanged.
+# The image guard saves the runner's caged images and loads them back at the
+# end (see dev/e2e/README.md).
+name: e2e-macos
+
+on:
+  workflow_dispatch:
+    inputs:
+      sections:
+        description: "Section letters, e.g. SM (empty: every section, including the macOS-only M)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-macos
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 90
+    env:
+      E2E_SCRATCH: ${{ github.workspace }}/../caged-e2e
+      SECTIONS: ${{ inputs.sections }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Docker Desktop is running
+        run: docker info --format '{{.OperatingSystem}} {{.ServerVersion}} {{.Architecture}}'
+      - name: Self-test of the suite's helpers
+        run: make e2e-selftest
+      - name: End-to-end suite
+        run: |
+          if [ -z "$SECTIONS" ]; then
+            make e2e-macos E2E_SCRATCH="$E2E_SCRATCH"
+          else
+            E2E_SAVE_IMAGES=1 bash dev/e2e/e2e.sh "$E2E_SCRATCH" "$PWD" "$SECTIONS"
+          fi

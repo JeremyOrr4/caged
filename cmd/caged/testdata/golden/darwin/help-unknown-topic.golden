@@ -24,6 +24,7 @@ Flags:
       --no-config             do not mount any host AI config into the container
       --no-mount              do not mount the current working directory
   -p, --publish stringArray   publish a container port on 127.0.0.1: PORT or HOST_PORT:CONTAINER_PORT (repeatable)
+      --trust-config          approve a changed config.yaml without asking (for scripts)
       --verbose               print which config files and environment names are passed
   -v, --version               version for caged
   -w, --workdir string        mount this host directory at /workspace/<folder-name>
