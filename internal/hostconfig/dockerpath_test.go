@@ -52,7 +52,7 @@ func TestMountPathsWithAColonAreRefused(t *testing.T) {
 
 // TestColonLinksInWholeTreesAreRefused: in a whole tree, a link stays visible
 // as itself, so only a target with a colon, which is mounted where the link
-// points, is refused. Pi's tree stays live here because its absolute link can
+// points, is refused. Pi's tree stays live here because its relative link can
 // be followed in the container; a colon in the link's own name is part of the
 // whole-tree mount and does not need a separate docker mount.
 func TestColonLinksInWholeTreesAreRefused(t *testing.T) {
@@ -62,7 +62,7 @@ func TestColonLinksInWholeTreesAreRefused(t *testing.T) {
 	writeFiles(t, home, ".codex/config.toml", ".pi/agent/settings.json", "dotfiles/f.md", "dotfiles/a:b.md")
 	symlink(t, home, ".codex/x:ro", "../dotfiles/f.md") // a whole tree needs a link the container can follow
 	symlink(t, home, ".codex/ab", "../dotfiles/a:b.md")
-	symlink(t, home, ".pi/agent/y:ro", filepath.Join(home, "dotfiles", "f.md"))
+	symlink(t, home, ".pi/agent/y:ro", "../../dotfiles/f.md")
 
 	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
 
