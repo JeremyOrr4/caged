@@ -22,30 +22,33 @@ func TestRuntimeAgentHomeDirectoriesAreWritableByMappedUsers(t *testing.T) {
 	t.Parallel()
 
 	dockerfile := strings.ReplaceAll(string(runtimeDockerfile), "\\\n", " ")
-	homePaths := []string{
-		"/home/caged/.config/pi",
-		"/home/caged/.pi",
-		"/home/caged/.pi/agent",
-		"/home/caged/.claude",
-		"/home/caged/.codex",
-		"/home/caged/.gemini",
+	// Every built-in agent's config directories, so a new agent is checked
+	// too, and Pi's install directory, which Pi writes at run time.
+	homePaths := []string{"/home/caged/.pi/agent"}
+	for _, definition := range agent.Builtin().All() {
+		for _, configPath := range definition.ConfigPaths {
+			homePaths = append(homePaths, "/home/caged/"+configPath.ContainerPath)
+		}
 	}
+	mkdirStart := strings.LastIndex(dockerfile, "mkdir -p /workspace")
+	if mkdirStart == -1 {
+		t.Fatal("runtime Dockerfile does not create the agent home paths")
+	}
+	mkdirLine, _, _ := strings.Cut(dockerfile[mkdirStart:], "&&")
 	for _, homePath := range homePaths {
-		if !strings.Contains(dockerfile, homePath) {
+		if !strings.Contains(mkdirLine+" ", " "+homePath+" ") {
 			t.Errorf("runtime Dockerfile does not create agent home path %q", homePath)
 		}
 	}
-	chmodStart := strings.Index(dockerfile, "chmod 0777 /home/caged")
+	// The final stage's chmod, up to the next command: the build stage has
+	// its own, and the mkdir before it names the same paths.
+	chmodStart := strings.LastIndex(dockerfile, "chmod 0777 /home/caged")
 	if chmodStart == -1 {
 		t.Fatal("runtime Dockerfile does not make agent home paths writable by mapped users")
 	}
-	chmodEnd := strings.Index(dockerfile[chmodStart:], "&& git config")
-	chmodLine := dockerfile[chmodStart:]
-	if chmodEnd >= 0 {
-		chmodLine = chmodLine[:chmodEnd]
-	}
+	chmodLine, _, _ := strings.Cut(dockerfile[chmodStart:], "&&")
 	for _, homePath := range homePaths {
-		if !strings.Contains(chmodLine, homePath) {
+		if !strings.Contains(chmodLine+" ", " "+homePath+" ") {
 			t.Errorf("runtime Dockerfile does not make agent home path %q writable", homePath)
 		}
 	}
@@ -118,11 +121,20 @@ func TestRuntimeIncludesGithubCLIAndPersistsItsConfigDirectory(t *testing.T) {
 	}
 }
 
+func TestRuntimeCreatesTheCagedConfigMountPoint(t *testing.T) {
+	t.Parallel()
+
+	dockerfile := string(runtimeDockerfile)
+	if got := strings.Count(dockerfile, "/home/caged/.config/caged"); got != 2 {
+		t.Errorf("runtime Dockerfile names /home/caged/.config/caged %d times; want 2 (mkdir and chmod 0777)", got)
+	}
+}
+
 func TestDockerfileBasesArePinnedByTheSameDigest(t *testing.T) {
 	t.Parallel()
 
 	var digests []string
-	for _, line := range strings.Split(runtimeDockerfile, "\n") {
+	for line := range strings.SplitSeq(runtimeDockerfile, "\n") {
 		if !strings.HasPrefix(line, "FROM ") {
 			continue
 		}
@@ -145,7 +157,7 @@ func TestBaseTargetUsesTheEmbeddedFiles(t *testing.T) {
 	t.Parallel()
 
 	target := Base("1.2.3")
-	if target.Role != RoleRuntime || target.Ref != BaseRef || target.Version != "1.2.3" || target.ContextName != "caged-runtime" || target.Source != "" {
+	if target.role != RoleRuntime || target.Ref != BaseRef || target.version != "1.2.3" || target.contextName != "caged-runtime" || target.ext.Source != "" || target.ext.Apt != nil {
 		t.Fatalf("Base() = %+v", target)
 	}
 	if len(target.Files) != 2 || target.Files[0].Name != "Dockerfile" || string(target.Files[0].Data) != runtimeDockerfile ||
@@ -159,7 +171,7 @@ func TestDockerfileRecordsEveryCLIVersion(t *testing.T) {
 
 	dockerfile := strings.ReplaceAll(runtimeDockerfile, "\\\n", " ")
 	var loop string
-	for _, line := range strings.Split(dockerfile, "\n") {
+	for line := range strings.SplitSeq(dockerfile, "\n") {
 		if strings.Contains(line, "for cli in ") {
 			loop = line
 		}

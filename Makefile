@@ -72,3 +72,33 @@ release-check:
 #   go install github.com/goreleaser/goreleaser/v2@v2.18.3
 release-snapshot:
 	goreleaser release --snapshot --clean
+
+# End-to-end tests against real Docker (dev/e2e/README.md). The scratch folder
+# must be outside the repository and, on macOS, shared with Docker Desktop
+# (/Users is by default). The image guard saves the daemon's caged images
+# first and loads them back at the end; E2E_SAVE_IMAGES=0 makes it refuse
+# instead.
+.PHONY: e2e-selftest e2e-smoke e2e e2e-macos try
+E2E_SCRATCH ?= $(HOME)/.cache/caged-e2e
+E2E_SAVE_IMAGES ?= 1
+E2E = E2E_SAVE_IMAGES=$(E2E_SAVE_IMAGES) bash dev/e2e/e2e.sh "$(E2E_SCRATCH)" "$(CURDIR)"
+
+e2e-selftest:
+	bash dev/e2e/selftest.sh
+
+# e2e-smoke runs section S only: build, run, doctor, clean (about 2 minutes).
+e2e-smoke: e2e-selftest
+	$(E2E) S
+
+e2e: e2e-selftest
+	$(E2E)
+
+# e2e-macos is e2e on a Mac, where section M (macOS only) runs too.
+e2e-macos: e2e-selftest
+	@test "$$(uname -s)" = Darwin || { echo "e2e-macos needs macOS; run make e2e here" >&2; exit 1; }
+	@case "$(E2E_SCRATCH)" in /Users/*) ;; *) echo "E2E_SCRATCH must be under /Users (Docker Desktop file sharing)" >&2; exit 1;; esac
+	$(E2E)
+
+# try builds bin/caged and runs it with ARGS, e.g. make try ARGS=doctor.
+try:
+	scripts/run-local.sh $(ARGS)

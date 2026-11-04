@@ -7,6 +7,18 @@ version is 0.x, flags and output can still change.
 
 ## [Unreleased]
 
+### Added
+
+- The first command that needs it (run, build, doctor, list) creates
+  `~/.config/caged/config.yaml` (or `$XDG_CONFIG_HOME/caged/`) with commented
+  examples only. An existing file is never touched. Help, version, clean and
+  `--no-config` do not create it.
+- Caged's config folder is mounted read-write at `/home/caged/.config/caged`, so
+  the config can be edited in the container. `--no-config` does not mount it.
+- A `config.yaml` changed since you last approved it is shown as a diff and needs
+  your approval (`y`, or `--trust-config` in scripts) before caged runs or builds;
+  `doctor` and `list` only show it.
+
 ## [0.1.0] - unreleased
 
 The first release.

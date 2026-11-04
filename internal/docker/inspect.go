@@ -61,7 +61,7 @@ func parseLabelList(list string) map[string]string {
 		return nil
 	}
 	labels := map[string]string{}
-	for _, pair := range strings.Split(list, ",") {
+	for pair := range strings.SplitSeq(list, ",") {
 		key, value, _ := strings.Cut(pair, "=")
 		labels[key] = value
 	}

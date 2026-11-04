@@ -1,16 +1,21 @@
 #!/bin/bash
+# shellcheck disable=SC2088 # every quoted ~ is literal: caged shows paths under home that way
 # End-to-end tests of caged against REAL Docker, using a stand-in runtime image (see README.md).
-# Normally run inside the test container by `make e2e`; it can also run directly on a Linux host with Docker.
+# Run it with `make e2e`, `make e2e-smoke` or `make e2e-macos`, or directly on a Linux or macOS host with Docker.
 # usage: e2e.sh <scratch dir> <repo dir> [section letters, default: all]   e.g.  e2e.sh /tmp/e2e ~/git/misc/caged AB
 # Touches only caged-runtime:* images and containers named caged-e2e-*, ports 38000-38999, and HOME=<scratch>/home.
 # Environment: E2E_UNPIN=1 drops the @sha256 pin from the base image (an offline daemon cannot verify it);
 #              /vendor, when present, is used for the Go modules (no network).
+#              E2E_THROWAWAY_DAEMON=1 and E2E_SAVE_IMAGES=1: see the image guard in guard.sh.
 set -u
-S=$(readlink -f "$1"); REPO=$(readlink -f "$2"); SECTIONS=${3:-ABCDEFGHLWI}
+HERE=$(cd "$(dirname "$0")" && pwd -P)
+. "$HERE/compat.sh"  # HOST_OS, HOST_ARCH and the commands GNU and BSD userland spell differently
+mkdir -p "$1" || exit 2  # abspath needs the parent; the default scratch folder may not exist yet
+S=$(abspath "$1"); REPO=$(abspath "$2"); SECTIONS=${3:-ABCDEFGHJLWMI}
+[ -n "$S" ] && [ -n "$REPO" ] || { echo "e2e: cannot resolve the scratch folder [$1] or the repository [$2]" >&2; exit 2; }
 command -v go >/dev/null 2>&1 || export PATH=$HOME/sdk/go1.27.2/bin:$HOME/go/bin:$PATH
 export GOTOOLCHAIN=local GOFLAGS=-buildvcs=false
 REALHOME=$HOME; [ -d "$REALHOME/.docker" ] && export DOCKER_CONFIG=$REALHOME/.docker
-HERE=$(dirname "$(readlink -f "$0")")
 pass=0; fail=0; failed=()
 ok()   { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad()  { fail=$((fail+1)); failed+=("$1"); printf '  FAIL %s\n         %s\n' "$1" "${2:0:400}"; }
@@ -22,37 +27,50 @@ inS()  { case "$SECTIONS" in *"$1"*) return 0;; *) return 1;; esac; }
 
 # tty "<stdin>" cmd args...   -> OUT (output without CRs), RC (caged's exit code). Runs on a pseudo-terminal.
 tty() { local input=$1; shift; local f=$S/tty.out
-  printf '%s\n' "$input" | script -qec "$(printf '%q ' "$@")" /dev/null > "$f" 2>&1; RC=${PIPESTATUS[1]}; OUT=$(tr -d '\r' < "$f"); }
+  printf '%s\n' "$input" | run_on_tty "$@" > "$f" 2>&1; RC=${PIPESTATUS[1]}; OUT=$(tr -d '\r' < "$f"); }
 # plain cmd args... -> OUT (stdout+stderr), RC, no terminal
 plain() { OUT=$("$@" 2>&1); RC=$?; }
 imgid() { docker image inspect "$1" --format '{{.Id}}' 2>/dev/null; }
 label() { docker image inspect "$1" --format "{{index .Config.Labels \"io.github.jeremyorr4.caged.$2\"}}" 2>/dev/null; }
-ncaged() { { docker images 'caged-runtime*' -q; docker images -q --filter label=io.github.jeremyorr4.caged.role; } | sort -u | wc -l | tr -d ' '; }
-others() { docker images --format '{{.Repository}}:{{.Tag}}' | grep -v '^caged-runtime:' | sort | md5sum | cut -c1-12; }
+others() { docker images --format '{{.Repository}}:{{.Tag}}' | grep -v '^caged-runtime:' | sort | cksum; }
+
+# Image guard (guard.sh): refuse a daemon whose caged images someone still needs, or save them first.
+. "$HERE/guard.sh"
+mkdir -p "$S"; image_guard "$S"
 
 # ---------------------------------------------------------------- preparation
-mkdir -p "$S"/{proj,home,xdg,bin,shim,other}
+mkdir -p "$S"/{proj,home,xdg,bin,real,shim,other}
 rsync -a --delete --exclude .git --exclude bin --exclude dist --exclude docs/local --exclude vendor "$REPO"/ "$S/src/"
 if [ -d /vendor ]; then rm -rf "$S/src/vendor"; cp -r /vendor "$S/src/vendor"; export GOFLAGS="-buildvcs=false -mod=vendor"; fi
+# wrap NAME: bin/NAME forgets the approved config copy (XDG_STATE_HOME) before each call, so the sections that
+# rewrite config.yaml between runs are not stopped by the change review. Section J runs the real binaries (real/NAME).
+wrap() { printf '#!/bin/sh\nrm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/caged"\nexec "%s/real/%s" "$@"\n' "$S" "$1" > "$S/bin/$1"; chmod +x "$S/bin/$1"; }
+stage_dockerfile() { # dockerfile-comment [extra dockerfile line]: the stand-in Dockerfile the next build embeds
+  python3 "$HERE/make-dockerfile.py" "$REPO/internal/images/Dockerfile" "$S/src/internal/images/Dockerfile" "$1"
+  [ -n "${E2E_UNPIN:-}" ] && sed_in_place -E 's/^(FROM ubuntu:24\.04)@sha256:[0-9a-f]{64}/\1/' "$S/src/internal/images/Dockerfile"
+  if [ -n "${2:-}" ]; then printf '%s\n' "$2" >> "$S/src/internal/images/Dockerfile"; fi
+}
 build_variant() { # name version dockerfile-comment [extra dockerfile line]
-  python3 "$HERE/make-dockerfile.py" "$REPO/internal/images/Dockerfile" "$S/src/internal/images/Dockerfile" "$3"
-  [ -n "${E2E_UNPIN:-}" ] && sed -i -E 's/^(FROM ubuntu:24\.04)@sha256:[0-9a-f]{64}/\1/' "$S/src/internal/images/Dockerfile"
-  [ -n "${4:-}" ] && printf '%s\n' "$4" >> "$S/src/internal/images/Dockerfile"
-  (cd "$S/src" && go build -ldflags "-X main.version=$2" -o "$S/bin/$1" ./cmd/caged) || { echo "build of $1 failed"; exit 2; }
+  stage_dockerfile "$3" "${4:-}"
+  (cd "$S/src" && go build -ldflags "-X main.version=$2" -o "$S/real/$1" ./cmd/caged) || { echo "build of $1 failed"; exit 2; }
+  wrap "$1"
 }
 build_variant r1  r1 "variant r1"
 build_variant r2  r2 "variant r2"
 build_variant r2b r2 "variant r2b"
 build_variant r3bad r3 "variant r3" "RUN false"
-build_variant r1b r1 "variant r1 again" # same version, other files
-(cd "$S/src" && go build -o "$S/bin/nover" ./cmd/caged && go build -ldflags "-X main.version=v1.2.3" -o "$S/bin/vtag" ./cmd/caged)
-C1=$S/bin/r1; C2=$S/bin/r2; C2B=$S/bin/r2b; C3=$S/bin/r3bad; C1B=$S/bin/r1b
+stage_dockerfile "variant r1 again" # nover and vtag embed a Dockerfile that builds (r3bad's ends in RUN false)
+(cd "$S/src" && go build -o "$S/real/nover" ./cmd/caged && go build -ldflags "-X main.version=v1.2.3" -o "$S/real/vtag" ./cmd/caged) && wrap nover && wrap vtag
+C1=$S/bin/r1; C2=$S/bin/r2; C2B=$S/bin/r2b; C3=$S/bin/r3bad
 printf '#!/bin/sh\necho "$@" >> %s/shim.log\nexit 1\n' "$S" > "$S/shim/docker"; chmod +x "$S/shim/docker"
-cd "$S/proj"; echo "project file" > file.txt
+cd "$S/proj" || exit 2; echo "project file" > file.txt
 tar -cf "$S/empty.tar" -T /dev/null  # an empty image archive, for the sections that docker-import one
-export HOME=$S/home; export XDG_CONFIG_HOME=$S/xdg
-UIDN=$(id -u); GIDN=$(id -g)
-OTHERS_BEFORE=$(others)
+export HOME=$S/home; export XDG_CONFIG_HOME=$S/xdg; export XDG_STATE_HOME=$S/state  # never the user's approvals
+UIDN=$(id -u)
+# What caged prints that depends on the host: internal/app/doctor_checks.go (checkProject, checkArch).
+if [ "$HOST_OS" = darwin ]; then PROBED="is shared with Docker Desktop"; else PROBED="can be mounted"; fi
+OTHER_ARCH=arm64; [ "$HOST_ARCH" = arm64 ] && OTHER_ARCH=amd64
+OTHERS_BEFORE=$(others); : > "$S/started"  # section I counts only temp folders made after this marker
 $C1 clean >/dev/null 2>&1; docker rm -f caged-e2e-hold >/dev/null 2>&1
 echo "caged images at the start: $(ncaged)"
 
@@ -94,7 +112,7 @@ if inS B; then section "B. image build and freshness (F2)"
   eq "B2 role label" "$(label caged-runtime:latest role)" runtime
   eq "B2 version label" "$(label caged-runtime:latest version)" r1
   H=$(label caged-runtime:latest runtime-hash); eq "B2 hash label is 64 hex" "$(echo "$H" | grep -Ec '^[0-9a-f]{64}$')" 1
-  want_arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/'); eq "B3 image architecture is the host's" "$(docker image inspect caged-runtime:latest --format '{{.Architecture}}')" "$want_arch"
+  eq "B3 image architecture is the host's" "$(docker image inspect caged-runtime:latest --format '{{.Architecture}}')" "$HOST_ARCH"
   tty 'exit' $C1 --no-config --verbose; has "B4 current image: verbose says so" "$OUT" "caged-runtime:latest is current (runtime ${H:0:12})"; hasnt "B4 no rebuild" "$OUT" "rebuilding"; hasnt "B4 no build notice" "$OUT" "building it first"
   ID1=$(imgid caged-runtime:latest); tty 'exit' $C1 --no-config; eq "B5 image unchanged by a run" "$(imgid caged-runtime:latest)" "$ID1"
   docker image rm caged-runtime:latest >/dev/null; tty 'exit' $C1 --no-config; has "B6 missing image is built first" "$OUT" "Runtime image caged-runtime:latest not found; building it first..."; eq "B6 image exists afterwards" "$([ -n "$(imgid caged-runtime:latest)" ] && echo yes)" yes
@@ -126,9 +144,12 @@ if inS C; then section "C. run behavior: mounts, user, env, config, exit codes (
   H=$HOME; mkdir -p $H/.claude $H/.codex/app-server-control $H/.codex/tmp/arg0 $H/.gemini $H/.config/gh $S/outside
   echo '{"a":1}' > $H/.claude/settings.json; echo 'model="x"' > $H/.codex/config.toml; echo '[user]' > $H/.gitconfig; echo '{}' > $H/.gemini/settings.json
   echo 'hosts' > $H/.config/gh/hosts.yml; ln -sfn $S/outside $H/.pi 2>/dev/null; echo secret > $S/outside/x
-  tty 'pwd; ls; id -u; exit' $C1 --no-config; has "C1 project mounted at /workspace/<name>" "$OUT" "/workspace/proj"; has "C1 project files visible" "$OUT" "file.txt"; has "C1 runs as the host uid ($UIDN)" "$OUT" "$UIDN"
+  tty 'pwd; ls; id -u; exit' $C1 --no-config; has "C1 project mounted at /workspace/<name>" "$OUT" "/workspace/proj"; has "C1 project files visible" "$OUT" "file.txt"; if [ "$HOST_OS" = darwin ]; then # Docker Desktop maps ownership itself, so caged passes no --user (docker/platform.go userArgs)
+    IMG_UID=$(docker run --rm --entrypoint id caged-runtime:latest -u); [ -n "$IMG_UID" ] || IMG_UID="(the image's uid: docker run failed)"
+    has "C1 runs as the image's caged user" "$OUT" "$IMG_UID"; else
+    has "C1 runs as the host uid ($UIDN)" "$OUT" "$UIDN"; fi
   tty 'echo made-in-container > /workspace/proj/new.txt; exit' $C1 --no-config; eq "C2 file written in the container lands on the host" "$(cat new.txt 2>/dev/null)" made-in-container
-  eq "C2 owned by the host user" "$(stat -c %u new.txt)" "$UIDN"; rm -f new.txt
+  eq "C2 owned by the host user" "$(file_uid new.txt)" "$UIDN"; rm -f new.txt
   tty 'ls -A /workspace; exit' $C1 --no-config --no-mount; hasnt "C3 --no-mount: project absent" "$OUT" "proj"
   echo other > $S/other/o.txt; tty 'pwd; ls; exit' $C1 --no-config -w $S/other; has "C4 -w mounts another directory" "$OUT" "/workspace/other"; has "C4 contents" "$OUT" "o.txt"
   tty 'pwd; exit' $C1 --no-config -w ../other; has "C4 relative --workdir" "$OUT" "/workspace/other"
@@ -144,7 +165,7 @@ if inS C; then section "C. run behavior: mounts, user, env, config, exit codes (
   mkdir -p $S/alt-outside && echo out > $S/alt-outside/config.toml; tty 'cat ~/.codex/config.toml 2>&1; exit' env CODEX_HOME=$S/alt-outside $C1 --verbose; has "C10b CODEX_HOME outside the home directory is refused" "$OUT" "config: refused $S/alt-outside (resolves outside home)"
   mkfifo $H/.codex/app-server-control/daemon.sock 2>/dev/null; tty 'ls -A ~/.codex/app-server-control | wc -l; ls ~/.codex/config.toml; exit' $C1; has "C11 codex's daemon socket directory is masked (empty inside)" "$OUT" "0"; has "C11 the rest of ~/.codex is there" "$OUT" "/home/caged/.codex/config.toml"; hasnt "C11 the socket itself is hidden" "$OUT" "daemon.sock"
   tty 'echo V=$CAGED_E2E_VAL; exit' env CAGED_E2E_VAL=s3cr3t-value $C1 --no-config --env CAGED_E2E_VAL --verbose; has "C12 --env passes the variable into the container" "$OUT" "V=s3cr3t-value"; has "C12 verbose names it" "$OUT" "env: pass CAGED_E2E_VAL"
-  hasnt "C12 caged itself never prints the value" "$(echo "$OUT" | grep -a '^env:\|^config:\|^image:\|^command:\|^port:\|^WARNING')" "s3cr3t-value"
+  hasnt "C12 caged itself never prints the value" "$(echo "$OUT" | grep -aE '^(env:|config:|image:|command:|port:|WARNING)')" "s3cr3t-value"
   tty 'echo V=$CAGED_E2E_UNSET; exit' $C1 --no-config --env CAGED_E2E_UNSET --verbose; has "C13 an unset variable is skipped" "$OUT" "env: skipped CAGED_E2E_UNSET"
   tty 'exit 7' $C1 --no-config; eq "C14 container exit code passes through" "$RC" 7
   tty 'exit' $C1 --no-config claude -- --exit-code 3; has "C15 agent exit announced" "$OUT" "Agent exited (status 3)"; eq "C15 agent exit code passes through" "$RC" 3
@@ -158,8 +179,8 @@ fi
 # ---------------------------------------------------------------- D: ports
 if inS D; then section "D. publishing ports (F1)"
   [ "$(ncaged)" = 0 ] && $C1 build >/dev/null 2>&1
-  LAN=$(hostname -I | awk '{print $1}')
-  ( printf 'cd /workspace/proj; python3 -m http.server 8080 --bind 0.0.0.0 >/dev/null 2>&1 &\nsleep 12\nexit\n' ) | script -qec "$C1 --no-config -p 38080:8080 -p 38090 --verbose" /dev/null > $S/ports.out 2>&1 &
+  LAN=$(lan_ip)
+  ( printf 'cd /workspace/proj; python3 -m http.server 8080 --bind 0.0.0.0 >/dev/null 2>&1 &\nsleep 12\nexit\n' ) | run_on_tty $C1 --no-config -p 38080:8080 -p 38090 --verbose > $S/ports.out 2>&1 &
   sleep 6
   PORTS=$(docker ps --format '{{.Ports}}' | head -2); has "D1 docker maps 127.0.0.1:38080->8080" "$PORTS" "127.0.0.1:38080->8080/tcp"; has "D1 and 127.0.0.1:38090->38090" "$PORTS" "127.0.0.1:38090->38090/tcp"
   eq "D2 host reaches the container's server on 127.0.0.1" "$(curl -s -m 4 http://127.0.0.1:38080/file.txt)" "project file"
@@ -243,11 +264,11 @@ fi
 if inS G; then section "G. doctor, list, clean (F5)"
   $C1 clean >/dev/null 2>&1; $C1 build >/dev/null 2>&1; mkdir -p $XDG_CONFIG_HOME/caged; EXT=$XDG_CONFIG_HOME/caged/config.yaml; rm -f $EXT
   plain $C1 doctor; eq "G1 doctor: exit 0 when healthy" "$RC" 0
-  has "G1 header" "$OUT" "caged r1 (linux/amd64)"; has "G1 docker row" "$OUT" "PASS  docker     $(command -v docker)"; has "G1 daemon row" "$OUT" "PASS  daemon     "; has "G1 image row" "$OUT" "PASS  image      caged-runtime:latest is current (runtime $(label caged-runtime:latest runtime-hash | cut -c1-12), built by caged r1)"
-  has "G1 config row" "$OUT" "PASS  config     no config file ($EXT)"; has "G1 links row" "$OUT" "PASS  links      no symlinked config"; has "G1 arch row" "$OUT" "PASS  arch       image linux/amd64 matches the Docker VM (amd64)"
-  has "G1 project row (real mount probe)" "$OUT" "PASS  project    $S/proj can be mounted"; has "G1 versions row (read from the image)" "$OUT" "PASS  versions   claude 2.1.3 (Claude Code), codex codex-cli 0.46.0, copilot GitHub Copilot CLI 0.0.330, gemini 0.9.0, gh gh version 2.45.0"
+  has "G1 header" "$OUT" "caged r1 ($HOST_OS/$HOST_ARCH)"; has "G1 docker row" "$OUT" "PASS  docker     $(command -v docker)"; has "G1 daemon row" "$OUT" "PASS  daemon     "; has "G1 image row" "$OUT" "PASS  image      caged-runtime:latest is current (runtime $(label caged-runtime:latest runtime-hash | cut -c1-12), built by caged r1)"
+  has "G1 config row" "$OUT" "PASS  config     $EXT (links.allow: 0; starter file created just now)"; has "G1 links row" "$OUT" "PASS  links      no symlinked config"; has "G1 arch row" "$OUT" "PASS  arch       image linux/$HOST_ARCH matches the Docker VM ($HOST_ARCH)"
+  has "G1 project row (real mount probe)" "$OUT" "PASS  project    $S/proj $PROBED"; has "G1 versions row (read from the image)" "$OUT" "PASS  versions   claude 2.1.3 (Claude Code), codex codex-cli 0.46.0, copilot GitHub Copilot CLI 0.0.330, gemini 0.9.0, gh gh version 2.45.0"
   hasnt "G1 no FAIL or WARN" "$OUT" "FAIL"; hasnt "G1 no WARN" "$OUT" "WARN"
-  plain $C1 doctor -w $S/other; has "G2 -w probes another directory" "$OUT" "PASS  project    $S/other can be mounted"
+  plain $C1 doctor -w $S/other; has "G2 -w probes another directory" "$OUT" "PASS  project    $S/other $PROBED"
   plain $C1 doctor -w /nonexistent; has "G3 -w nonexistent: project FAIL" "$OUT" "FAIL  project    inspect working directory \"/nonexistent\""; eq "G3 exit 1" "$RC" 1; has "G3 summary on stderr" "$OUT" "doctor: 1 checks failed"
   plain $C1 doctor -w $HOME; has "G4 home directory: WARN, not probed" "$OUT" "WARN  project"; eq "G4 exit 0 (warn only)" "$RC" 0
   plain env DOCKER_HOST=unix:///nonexistent $C1 doctor; has "G5 daemon down: FAIL" "$OUT" "FAIL  daemon"; has "G5 dependants skipped" "$OUT" "SKIP  image      needs daemon"; has "G5 config check still runs" "$OUT" "PASS  config"; eq "G5 exit 1" "$RC" 1
@@ -257,7 +278,7 @@ if inS G; then section "G. doctor, list, clean (F5)"
   printf 'image:\n  apt: [jq, tmux]\n' > $EXT; plain $C1 doctor; has "G9 extension edited: stale" "$OUT" "WARN  ext-image  caged-runtime:ext is out of date; the next run rebuilds it"
   printf 'nope: 1\n' > $EXT; plain $C1 doctor; has "G10 invalid file: FAIL" "$OUT" "FAIL  config"; has "G10 ext-image skipped" "$OUT" "SKIP  ext-image  needs config"; eq "G10 exit 1" "$RC" 1; rm -f $EXT; $C1 clean >/dev/null 2>&1
   plain $C1 doctor; eq "G11 no images: exit 0" "$RC" 0; has "G11 image WARN" "$OUT" "WARN  image      caged-runtime:latest is not built yet; the next run builds it, or run caged build"; has "G11 arch skipped" "$OUT" "SKIP  arch       no image built yet"; has "G11 project skipped" "$OUT" "SKIP  project    no image built yet to probe with"
-  docker import --platform linux/arm64 $S/empty.tar caged-runtime:latest >/dev/null 2>&1; plain $C1 doctor; has "G12 wrong-architecture image: FAIL" "$OUT" "FAIL  arch       image linux/arm64 does not match Docker (amd64); it runs under emulation; run caged build --no-cache"; eq "G12 exit 1" "$RC" 1
+  docker import --platform linux/$OTHER_ARCH $S/empty.tar caged-runtime:latest >/dev/null 2>&1; plain $C1 doctor; has "G12 wrong-architecture image: FAIL" "$OUT" "FAIL  arch       image linux/$OTHER_ARCH does not match Docker ($HOST_ARCH); it runs under emulation; run caged build --no-cache"; eq "G12 exit 1" "$RC" 1
   $C1 clean >/dev/null 2>&1; $C1 build >/dev/null 2>&1
   H=$HOME; mkdir -p $H/.claude $H/.config/gh; echo x > $H/.claude/s.json
   plain env ANTHROPIC_API_KEY=very-secret-123 OPENAI_API_KEY= $C1 list; has "G13 list header" "$OUT" "AGENT"; has "G13 claude row" "$OUT" "claude   ~/.claude"; has "G13 claude env name" "$OUT" "ANTHROPIC_API_KEY"; hasnt "G13 the secret value never appears" "$OUT" "very-secret-123"
@@ -280,7 +301,7 @@ if inS H; then section "H. version resolution and packaging (F6)"
   plain $S/bin/nover --version; eq "H1 no version linked: dev" "$OUT" "caged version dev"
   plain $S/bin/vtag --version; eq "H2 linked v1.2.3: leading v stripped" "$OUT" "caged version 1.2.3"
   plain $C1 --version; eq "H3 linked r1" "$OUT" "caged version r1"
-  plain $C1 doctor -w $S/other; has "H4 doctor header carries the version" "$OUT" "caged r1 (linux/"
+  plain $C1 doctor -w $S/other; has "H4 doctor header carries the version" "$OUT" "caged r1 ($HOST_OS/"
   $C1 clean >/dev/null 2>&1; $C1 build >/dev/null 2>&1; eq "H5 image version label is the resolved version" "$(label caged-runtime:latest version)" r1
   $S/bin/vtag clean >/dev/null 2>&1; $S/bin/vtag build >/dev/null 2>&1; eq "H5b v-prefixed link is stripped in the label" "$(label caged-runtime:latest version)" "1.2.3"
   (cd "$REPO" && git ls-files --error-unmatch LICENSE CHANGELOG.md >/dev/null 2>&1; true)
@@ -288,6 +309,42 @@ if inS H; then section "H. version resolution and packaging (F6)"
   grep -q "Copyright (c) 2026 Jeremy Orr" "$REPO/LICENSE" && ok "H6 copyright line" || bad "H6 copyright line" ""
   awk -v v=0.1.0 '/^## \[/ { if (found) exit; found = index($0, "[" v "]") > 0; next } found { print }' "$REPO/CHANGELOG.md" | grep -q "caged doctor" && ok "H7 release notes extract from CHANGELOG" || bad "H7 release notes extract" ""
   $C1 clean >/dev/null 2>&1; $S/bin/vtag clean >/dev/null 2>&1
+fi
+
+# ---------------------------------------------------------------- J: first-use config, writable mount, change review
+if inS J; then section "J. first-use config.yaml, the writable config mount, and the change review"
+  [ "$(ncaged)" = 0 ] && $C1 build >/dev/null 2>&1
+  R=$S/real/r1; JH=$S/jhome; JX=$S/jxdg; JS=$S/jstate; rm -rf $JH $JX $JS; mkdir -p $JH
+  JE="env HOME=$JH XDG_CONFIG_HOME=$JX XDG_STATE_HOME=$JS"; JC=$JX/caged/config.yaml
+  tty 'cat ~/.config/caged/config.yaml | head -3; exit' $JE $R
+  has "J1 the first run says it created the starter config" "$OUT" "created starter config"; [ -f $JC ] && ok "J1 config.yaml exists on the host" || bad "J1 config.yaml exists on the host" ""
+  eq "J1 file mode 600" "$(file_mode $JC)" 600; eq "J1 directory mode 700" "$(file_mode $JX/caged)" 700
+  has "J2 the container sees the starter file" "$OUT" "caged configuration"
+  [ ! -e $JH/.config/caged ] && ok "J2 an absolute XDG_CONFIG_HOME wins over ~/.config" || bad "J2 XDG wins" "~/.config/caged was created"
+  tty 'printf "links:\n  deny:\n    - ~/never\n" > ~/.config/caged/new.tmp; mv ~/.config/caged/new.tmp ~/.config/caged/config.yaml; exit' $JE $R
+  has "J3 an atomic save (rename) in the container reaches the host" "$(cat $JC)" "~/never"
+  tty 'n' $JE $R --no-mount; eq "J4 an unapproved change stops the run (exit 1)" "$RC" 1
+  has "J4 the banner names the file" "$OUT" "CAGED CONFIG CHANGED"; has "J4 the diff shows the added line" "$OUT" "+    - ~/never"; has "J4 and asks" "$OUT" "Use this config? [y/N]"
+  tty 'y
+exit' $JE $R --no-mount; eq "J5 answering y runs" "$RC" 0
+  tty 'exit' $JE $R --no-mount; hasnt "J5 and the change is not asked about again" "$OUT" "CHANGED"
+  printf '# added later\n' >> $JC; plain $JE $R doctor; eq "J6 doctor goes on (exit 0)" "$RC" 0; has "J6 and shows the pending change" "$OUT" "Not approved yet"
+  tty 'exit' $JE $R --no-mount --trust-config; eq "J7 --trust-config approves a change" "$RC" 0; has "J7 and still shows the diff" "$OUT" "+# added later"
+  printf 'x: 1\n' > $JC; tty 'exit' $JE $R --no-mount --trust-config; has "J8 an invalid config is the usual error" "$OUT" "config.yaml"; eq "J8 exit 1" "$RC" 1
+  : > $JC; tty 'ls -A ~/.config/caged | wc -l; exit' $JE $R --no-config --trust-config; has "J9 --no-config does not mount the config dir (empty inside)" "$OUT" "0"
+  JH2=$S/jhome2; rm -rf $JH2 $JS; mkdir -p $JH2; JE2="env HOME=$JH2 XDG_CONFIG_HOME=$JH2/cfg XDG_STATE_HOME=$JS"
+  tty 'exit' $JE2 $R --no-config; [ ! -e $JH2/cfg ] && ok "J10 --no-config does not create the config" || bad "J10 --no-config creates nothing" "$(ls -A $JH2)"
+  for c in "--version" "--help" "clean" "clean --dry-run"; do $JE2 $R $c >/dev/null 2>&1; done
+  [ ! -e $JH2/cfg ] && [ ! -e $JS ] && ok "J11 version, help and clean create nothing" || bad "J11 version, help and clean create nothing" "$(ls -A $JH2 $JS 2>&1)"
+  mkdir -p $JH2/cfg/caged; printf 'image:\n  apt: []\n' > $JH2/cfg/caged/config.yaml; chmod 644 $JH2/cfg/caged/config.yaml
+  tty 'exit' $JE2 $R --no-mount; eq "J12 an existing config is untouched" "$(cat $JH2/cfg/caged/config.yaml)" "$(printf 'image:\n  apt: []')"; eq "J12 and keeps its mode" "$(file_mode $JH2/cfg/caged/config.yaml)" 644
+  mkdir -p $JH2/dotfiles/caged; mv $JH2/cfg/caged/config.yaml $JH2/dotfiles/caged/; rmdir $JH2/cfg/caged; ln -s $JH2/dotfiles/caged $JH2/cfg/caged
+  JE3="env HOME=$JH2 XDG_CONFIG_HOME=$JH2/cfg XDG_STATE_HOME=$JS"
+  tty 'ls ~/.config/caged 2>&1; exit' $JE3 $R --no-mount --verbose; has "J13 a symlinked config dir is refused without links.allow, with the fix" "$OUT" 'under links.allow'
+  printf 'links:\n  allow:\n    - path: %s\n' "$JH2/dotfiles" > $JH2/dotfiles/caged/config.yaml
+  tty 'y
+ls ~/.config/caged; exit' $JE3 $R --no-mount; has "J14 allowed through links.allow, the linked dir is mounted" "$OUT" "config.yaml"
+  rm -rf $JH $JX $JS $JH2
 fi
 
 # ---------------------------------------------------------------- L: symlinked config (Stow layout)
@@ -351,8 +408,65 @@ if inS W; then section "W. workdirs.allow limits the project directory"
   [ -e "$S/shim.log" ] && bad "W4 a refused directory makes no docker call" "$(cat $S/shim.log)" || ok "W4 a refused directory makes no docker call"
   plain $C1 doctor -w $S/other; has "W5 doctor reports it on the project row" "$OUT" "FAIL  project    refusing to mount $S/other"; eq "W5 exit 1" "$RC" 1
   printf 'workdirs:\n  allow: []\n' > $CFG; plain env PATH="$S/shim:$PATH" $C1 --no-config; eq "W6 an empty list refuses every directory" "$RC" 1
+  printf 'workdirs:\n' > $CFG; plain env PATH="$S/shim:$PATH" $C1 --no-config; eq "W6b a bare workdirs key refuses every directory" "$RC" 1; has "W6b with the fix" "$OUT" "not under workdirs.allow"
+  printf 'workdirs: ~\n' > $CFG; plain env PATH="$S/shim:$PATH" $C1 --no-config; eq "W6c workdirs: ~ refuses every directory" "$RC" 1; has "W6c with the fix" "$OUT" "not under workdirs.allow"
+  [ -e "$S/shim.log" ] && bad "W6d refused directories make no docker call" "$(cat $S/shim.log)" || ok "W6d refused directories make no docker call"
   printf 'image:\n  apt: []\n' > $CFG; tty 'pwd; exit' $C1 --no-config -w $S/other; has "W7 without a workdirs key any directory works" "$OUT" "/workspace/other"
   rm -f $CFG
+fi
+
+# ---------------------------------------------------------------- M: macOS only (Docker Desktop)
+if inS M; then section "M. macOS: /Users and /var paths, ownership, localhost, doctor, case and Unicode in names"
+  if [ "$HOST_OS" != darwin ]; then echo "  skip M: not macOS (HOST_OS=$HOST_OS)"; else
+  [ "$(ncaged)" = 0 ] && $C1 build >/dev/null 2>&1
+  H=$HOME; CFG=$XDG_CONFIG_HOME/caged/config.yaml; mkdir -p $XDG_CONFIG_HOME/caged; rm -f $CFG
+  # M1 the default Docker Desktop file sharing covers /Users; make e2e-macos puts the scratch folder there.
+  case "$S" in /Users/*) ok "M1 the scratch folder is under /Users";; *) bad "M1 the scratch folder is under /Users" "$S (use make e2e-macos)";; esac
+  tty 'pwd; ls; exit' $C1 --no-config; has "M1 a project under /Users is mounted" "$OUT" "/workspace/proj"; has "M1 and its files are visible" "$OUT" "file.txt"
+  # M2 /var is a symlink to /private/var: a project reached through it is resolved, not refused as a link.
+  VARD=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)}; VARD=$(mktemp -d "${VARD%/}/caged-e2e-var.XXXXXX") || VARD=$S/no-var-dir; mkdir -p "$VARD"; chmod 755 "$VARD"; echo var-file > "$VARD/v.txt"  # mktemp makes it 0700
+  case "$VARD" in /var/*) ok "M2 the temp folder is reached through /var";; *) bad "M2 the temp folder is reached through /var" "$VARD (TMPDIR=${TMPDIR:-unset})";; esac
+  rm -f "$S/m2.rc" "$S/m2.out"; (cd "$VARD" && tty 'ls /workspace/*; exit' $C1 --no-config && printf '%s\n' "$RC" > "$S/m2.rc" && printf '%s' "$OUT" > "$S/m2.out")
+  has "M2 a project under /var is mounted" "$(cat "$S/m2.out")" "v.txt"; eq "M2 exit 0" "$(cat "$S/m2.rc")" 0
+  tty 'ls /workspace/*; exit' $C1 --no-config -w "$VARD"; has "M2 -w with a /var path" "$OUT" "v.txt"
+  plain $C1 doctor -w "$VARD"; has "M2 doctor probes the /var path" "$OUT" "PASS  project"; rm -rf "$VARD"
+  # M3 Docker Desktop maps ownership: a file the container makes belongs to the host user, without --user.
+  tty 'touch /workspace/proj/m3.txt; id -u; exit' $C1 --no-config; eq "M3 a file made in the container belongs to the host user" "$(file_uid m3.txt)" "$UIDN"; rm -f m3.txt
+  # M4 a published port answers on 127.0.0.1 and on localhost.
+  ( printf 'cd /workspace/proj; python3 -m http.server 8080 --bind 0.0.0.0 >/dev/null 2>&1 &\nsleep 12\nexit\n' ) | run_on_tty $C1 --no-config -p 38085:8080 > $S/mports.out 2>&1 &
+  sleep 6
+  eq "M4 127.0.0.1 reaches the container's server" "$(curl -s -m 4 http://127.0.0.1:38085/file.txt)" "project file"
+  eq "M4 localhost reaches it too" "$(curl -s -m 4 http://localhost:38085/file.txt)" "project file"
+  wait
+  # M5 doctor on Docker Desktop
+  plain $C1 doctor; eq "M5 doctor: exit 0" "$RC" 0; has "M5 header names darwin" "$OUT" "caged r1 (darwin/$HOST_ARCH)"
+  has "M5 daemon is Docker Desktop" "$OUT" "PASS  daemon     Docker Desktop, engine "; hasnt "M5 no untested-runtime warning" "$OUT" "untested runtime"
+  has "M5 arch row" "$OUT" "PASS  arch       image linux/$HOST_ARCH matches the Docker VM ($HOST_ARCH)"; hasnt "M5 no Rosetta warning" "$OUT" "Rosetta"
+  has "M5 project row says shared with Docker Desktop" "$OUT" "PASS  project    $S/proj is shared with Docker Desktop"
+  # M6 a Stow layout under /Users
+  mkdir -p $H/dotfiles/m6/.claude $H/.claude; echo stow-m6 > $H/dotfiles/m6/.claude/M6.md; ln -s ../dotfiles/m6/.claude/M6.md $H/.claude/M6.md
+  printf 'links:\n  allow:\n    - path: ~/dotfiles\n' > $CFG
+  tty 'cat ~/.claude/M6.md; exit' $C1 --verbose; has "M6 a Stow link under /Users reads through" "$OUT" "stow-m6"; has "M6 and is reported as a link" "$OUT" "(via link $H/.claude/M6.md)"
+  rm -f $H/.claude/M6.md $CFG; rm -rf $H/dotfiles/m6
+  # M7 APFS ignores case by default: names that differ only in case are one folder (bugs.md Q-WB-7).
+  : > "$S/CaseProbe"; if [ ! -e "$S/caseprobe" ]; then echo "  skip M7: $S is on a case-sensitive volume"; else
+    mkdir -p $H/.ssh; echo SECRET-M7 > $H/.ssh/id_m7
+    tty 'ls ~/.claude 2>&1; exit' env CLAUDE_CONFIG_DIR=$H/.SSH $C1 --verbose
+    has "M7 CLAUDE_CONFIG_DIR=~/.SSH is ~/.ssh: denied" "$OUT" "config: refused $H/.SSH (config path is denied)"; hasnt "M7 and the key is not visible" "$OUT" "id_m7"
+    printf 'links:\n  allow:\n    - path: ~/.SSH\n' > $CFG; ln -s ../.SSH/id_m7 $H/.claude/m7key
+    tty 'cat ~/.claude/m7key 2>&1; exit' $C1 --verbose; has "M7 links.allow naming ~/.SSH is refused as inside ~/.ssh" "$OUT" 'links.allow entry "~/.SSH" is inside the denied path "~/.ssh"'; hasnt "M7 and its secret is not readable" "$OUT" "SECRET-M7"
+    rm -f $H/.claude/m7key $CFG
+    STATE_CASE=$(printf '%s' "$XDG_CONFIG_HOME" | tr '[:lower:]' '[:upper:]')
+    tty 'exit' env XDG_STATE_HOME="$STATE_CASE" $C1 --verbose --no-mount; has "M7 XDG_STATE_HOME differing only in case from XDG_CONFIG_HOME is refused" "$OUT" "overlaps caged's approval state folder"
+    rm -rf $H/.ssh; fi
+  # M8 APFS ignores Unicode normalization: a project named in NFD is reached by its NFC name.
+  NFD=$(printf 'cafe\314\201'); NFC=$(printf 'caf\303\251'); mkdir -p "$S/$NFD"; echo u > "$S/$NFD/u.txt"
+  rm -f "$S/m8.out"; (cd "$S/$NFC" 2>/dev/null && tty 'ls /workspace/*; exit' $C1 --no-config && printf '%s' "$OUT" > "$S/m8.out")
+  has "M8 a project named in NFD, entered by its NFC name, is mounted" "$(cat "$S/m8.out" 2>/dev/null)" "u.txt"; rm -rf "${S:?}/$NFD"
+  # M9 the config folder defaults to ~/.config, not ~/Library/Application Support.
+  tty 'exit' env -u XDG_CONFIG_HOME $C1 --no-config --verbose; has "M9 the default config file is ~/.config/caged/config.yaml" "$OUT" "~/.config/caged/config.yaml"
+  hasnt "M9 not under Library" "$OUT" "Library/Application Support"
+  fi
 fi
 
 # ---------------------------------------------------------------- I: leftovers
@@ -360,7 +474,12 @@ if inS I; then section "I. leftovers"
   $C1 clean >/dev/null 2>&1
   eq "I1 no caged images remain" "$(ncaged)" 0
   eq "I2 no caged-e2e containers remain" "$(docker ps -a --format '{{.Names}}' | grep -c caged-e2e)" 0
-  eq "I3 no leftover caged build directories in /tmp" "$(ls /tmp | grep -c '^caged-\(runtime\|extension\)-')" 0
+  # caged's temp folders are made by Go's os.MkdirTemp, so they live in $TMPDIR (macOS sets it), else /tmp.
+  # Only those made during this run count; other runs may have left theirs.
+  leftovers() { [ -d "${TMPDIR:-/tmp}/" ] || { echo "no temp folder ${TMPDIR:-/tmp}"; return; }
+    find "${TMPDIR:-/tmp}/" -maxdepth 1 -newer "$S/started" \( -name "$1" -o -name "$2" \) | wc -l | tr -d ' '; }
+  eq "I3 no leftover caged build directories in the temp folder" "$(leftovers 'caged-runtime-*' 'caged-extension-*')" 0
+  eq "I3b no leftover Pi staging or mask folders in the temp folder" "$(leftovers 'caged-pi-config-*' 'caged-run-masks-*')" 0
   eq "I4 other images untouched" "$(others)" "$OTHERS_BEFORE"
   [ ! -e "$REALHOME/.config/caged" ] && ok "I5 the real ~/.config/caged was never created" || bad "I5 real ~/.config/caged" "exists"
 fi

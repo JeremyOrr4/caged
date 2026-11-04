@@ -106,27 +106,37 @@ func NewDoctor(deps DoctorDeps) *Doctor {
 // failed or was skipped is skipped, so one root cause does not produce a wall
 // of failures.
 func (d *Doctor) Diagnose(ctx context.Context, opts DoctorOptions) DoctorReport {
-	report := DoctorReport{Header: fmt.Sprintf("caged %s (%s/%s)", d.deps.Version, d.deps.Host.OS, d.deps.Host.Arch)}
-	known := &facts{doctor: d, opts: opts}
-	statuses := map[string]Status{}
-	for _, check := range d.checks() {
-		result := Result{Name: check.name}
-		if blocker, blocked := firstBlocker(check.needs, statuses); blocked {
-			result.Status, result.Detail = StatusSkip, "needs "+blocker
-		} else {
-			result = check.run(ctx, known)
-			result.Name = check.name
-		}
-		statuses[check.name] = result.Status
-		report.Results = append(report.Results, result)
+	return DoctorReport{
+		Header:  fmt.Sprintf("caged %s (%s/%s)", d.deps.Version, d.deps.Host.OS, d.deps.Host.Arch),
+		Results: runChecks(ctx, &facts{doctor: d, opts: opts, home: homeLookup{env: d.deps.Env}}, d.checks()),
 	}
-	return report
 }
 
-// firstBlocker returns the first of needs that failed or was skipped.
+// runChecks runs checks in order and returns one result per check, named after
+// it. A check is skipped when one of its needs failed, was skipped, or has not
+// run yet.
+func runChecks(ctx context.Context, known *facts, checks []check) []Result {
+	var results []Result
+	statuses := map[string]Status{}
+	for _, check := range checks {
+		var result Result
+		if blocker, blocked := firstBlocker(check.needs, statuses); blocked {
+			result = Result{Status: StatusSkip, Detail: "needs " + blocker}
+		} else {
+			result = check.run(ctx, known)
+		}
+		result.Name = check.name
+		statuses[check.name] = result.Status
+		results = append(results, result)
+	}
+	return results
+}
+
+// firstBlocker returns the first of needs that failed, was skipped, or has
+// not run, so a need that names no earlier check fails safe.
 func firstBlocker(needs []string, statuses map[string]Status) (string, bool) {
 	for _, need := range needs {
-		if status := statuses[need]; status == StatusFail || status == StatusSkip {
+		if status, ran := statuses[need]; !ran || status == StatusFail || status == StatusSkip {
 			return need, true
 		}
 	}

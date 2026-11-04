@@ -22,7 +22,7 @@ func RefFor(ext *plan.Extension) string {
 func Extension(ext plan.Extension, baseID, version string) Target {
 	files := []plan.File{{Name: "Dockerfile", Label: "Dockerfile", Data: []byte(extensionDockerfile(ext.Apt)), Mode: 0o644}}
 	return Target{
-		Role:  RoleExtension,
+		role:  RoleExtension,
 		Ref:   ExtensionRef,
 		Files: files,
 		Identity: []plan.Label{
@@ -30,10 +30,16 @@ func Extension(ext plan.Extension, baseID, version string) Target {
 			{Key: LabelExtensionHash, Value: ContextHash(files)},
 			{Key: LabelBaseID, Value: baseID},
 		},
-		Version:     version,
-		Source:      fmt.Sprintf("%s (apt: %s)", ext.Source, strings.Join(ext.Apt, ", ")),
-		ContextName: "caged-extension",
+		version:     version,
+		ext:         ext,
+		contextName: "caged-extension",
 	}
+}
+
+// extensionSource names where an extension came from: its config file and
+// its package list.
+func (t Target) extensionSource() string {
+	return fmt.Sprintf("%s (apt: %s)", t.ext.Source, strings.Join(t.ext.Apt, ", "))
 }
 
 // extensionDockerfile generates the Dockerfile of an extension. The packages
@@ -46,11 +52,4 @@ func extensionDockerfile(apt []string) string {
 		"    && apt-get install -y --no-install-recommends " + strings.Join(apt, " ") + " \\\n" +
 		"    && rm -rf /var/lib/apt/lists/*\n" +
 		"USER caged\n"
-}
-
-// extensionPath is the part of an extension target's Source before the package
-// list.
-func (t Target) extensionPath() string {
-	path, _, _ := strings.Cut(t.Source, " (apt: ")
-	return path
 }

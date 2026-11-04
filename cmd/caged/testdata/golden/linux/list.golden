@@ -11,4 +11,5 @@ gemini   ~/.gemini (3 files)  -
 gh       ~/.config/gh         -
 pi       ~/.pi                -
 === stderr
+caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 === docker invocations

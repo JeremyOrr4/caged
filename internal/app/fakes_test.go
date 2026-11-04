@@ -153,7 +153,7 @@ func currentExtensionImage(ext plan.Extension, baseID, version string) engine.Im
 
 // testExtension is a small extension used by several tests.
 func testExtension() *plan.Extension {
-	return &plan.Extension{Source: "~/.config/caged/image.json", Apt: []string{"neovim", "tmux"}}
+	return &plan.Extension{Source: "~/.config/caged/config.yaml", Apt: []string{"neovim", "tmux"}}
 }
 
 // fakeProber is a Prober with fixed answers. It logs "read <ref> <path>" and

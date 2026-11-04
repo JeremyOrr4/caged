@@ -1,5 +1,6 @@
 // Package app holds caged's use cases: run an agent or shell in a container,
-// and build the runtime image.
+// build, diagnose and list, each behind ConfigGuard's review of config.yaml,
+// and clean. It declares the interfaces it needs and imports no adapter.
 package app
 
 import (
@@ -9,22 +10,24 @@ import (
 	"github.com/JeremyOrr4/caged/internal/images"
 )
 
-// Runner is the run use case.
-type Runner struct {
-	exts    Extensions
-	planner RunPlanner
-	daemon  Daemon
-	ensurer *ImageEnsurer
-	run     ContainerRunner
-	stderr  io.Writer
+// RunnerDeps are the collaborators of a Runner.
+type RunnerDeps struct {
+	Extensions Extensions      // reads the image extension
+	Planner    RunPlanner      // plans the container
+	Daemon     Daemon          // checks the engine
+	Ensurer    *ImageEnsurer   // makes sure the images exist and are current
+	Containers ContainerRunner // starts the container
+	Stderr     io.Writer       // progress messages
 }
 
-// NewRunner returns a Runner that reads the image extension from exts, plans
-// runs with planner, checks the engine with daemon, makes sure the images
-// exist through ensurer, starts containers with run, and reports progress on
-// stderr.
-func NewRunner(exts Extensions, planner RunPlanner, daemon Daemon, ensurer *ImageEnsurer, run ContainerRunner, stderr io.Writer) *Runner {
-	return &Runner{exts: exts, planner: planner, daemon: daemon, ensurer: ensurer, run: run, stderr: stderr}
+// Runner is the run use case.
+type Runner struct {
+	deps RunnerDeps
+}
+
+// NewRunner returns a Runner that works through deps.
+func NewRunner(deps RunnerDeps) *Runner {
+	return &Runner{deps: deps}
 }
 
 // Run reads the image extension, plans the container, checks the engine,
@@ -32,25 +35,26 @@ func NewRunner(exts Extensions, planner RunPlanner, daemon Daemon, ensurer *Imag
 // container. The config file and the plan come first, so a bad file or a
 // bad request fails before any docker call.
 func (r *Runner) Run(ctx context.Context, req Request) error {
-	rep := NewReporter(r.stderr, req.Verbose)
-	ext, err := r.exts.Load()
+	rep := NewReporter(r.deps.Stderr, req.Verbose)
+	ext, err := r.deps.Extensions.Load()
 	if err != nil {
 		return err
 	}
-	spec, err := r.planner.Plan(req, images.RefFor(ext), rep)
+	spec, err := r.deps.Planner.Plan(req, images.RefFor(ext), rep)
 	if err != nil {
 		return err
 	}
-	if _, err := r.daemon.Daemon(ctx); err != nil {
+	if _, err := r.deps.Daemon.Daemon(ctx); err != nil {
 		return err
 	}
 	if ext == nil {
-		if source, err := r.exts.Source(); err == nil {
-			rep.Detail("image: no image.apt packages in %s", source)
+		// best effort: a --verbose line that needs the path; Load already succeeded
+		if source, err := r.deps.Extensions.Source(); err == nil {
+			rep.detail("image: no image.apt packages in %s", source)
 		}
 	}
-	if _, err := r.ensurer.Ensure(ctx, ext, rep); err != nil {
+	if err := r.deps.Ensurer.ensureImages(ctx, ext, rep); err != nil {
 		return err
 	}
-	return r.run.RunContainer(ctx, spec)
+	return r.deps.Containers.RunContainer(ctx, spec)
 }

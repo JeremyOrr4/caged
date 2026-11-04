@@ -4,6 +4,7 @@ error: exit status 1
 leftover temp entries: 0
 === stdout
 === stderr
+caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 WARNING: allowlisted agent credentials are available inside the container.
 Runtime image caged-runtime:latest was built by caged 0.0.1; rebuilding it for caged test (this can take a few minutes)...
 ERROR: failed to solve: process "/bin/sh -c false" did not complete successfully

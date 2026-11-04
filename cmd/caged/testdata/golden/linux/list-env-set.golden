@@ -11,4 +11,5 @@ gemini   ~/.gemini (3 files)  -
 gh       ~/.config/gh         GH_TOKEN
 pi       ~/.pi                ANTHROPIC_API_KEY
 === stderr
+caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 === docker invocations

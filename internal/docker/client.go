@@ -5,11 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"path/filepath"
 	"strings"
 
+	"github.com/JeremyOrr4/caged/internal/configstage"
 	"github.com/JeremyOrr4/caged/internal/engine"
 	"github.com/JeremyOrr4/caged/internal/plan"
 	"github.com/JeremyOrr4/caged/internal/system"
@@ -21,7 +21,8 @@ type Executor interface {
 	Run(ctx context.Context, cmd system.Command) error
 }
 
-// FileSystem holds the temporary build context. system.FS is the production implementation.
+// FileSystem holds temporary build contexts and mask files. system.FS is the
+// production implementation.
 type FileSystem interface {
 	MkdirTemp(dir, pattern string) (string, error)
 	WriteFile(name string, data []byte, perm fs.FileMode) error
@@ -29,19 +30,46 @@ type FileSystem interface {
 	RemoveAll(path string) error
 }
 
+// ConfigStager runs staged config mounts from copies, and writes the
+// container's changes back afterwards. *configstage.Stager implements it.
+type ConfigStager interface {
+	Stage(mounts []plan.ConfigMount) (*configstage.Session, error)
+}
+
+// Deps are the collaborators of a Client.
+type Deps struct {
+	Exec     Executor
+	FS       FileSystem
+	Stager   ConfigStager // nil stages nothing
+	Platform system.Platform
+	Stdio    system.Stdio // connected to builds and containers
+}
+
 // Client drives the docker CLI.
 type Client struct {
 	exec     Executor
 	fs       FileSystem
+	stager   ConfigStager
 	platform system.Platform
 	stdio    system.Stdio
 }
 
-// NewClient returns a Client that runs docker through exec, writes build
-// contexts through fsys, applies the rules for platform, and connects
-// containers to stdio.
-func NewClient(exec Executor, fsys FileSystem, platform system.Platform, stdio system.Stdio) *Client {
-	return &Client{exec: exec, fs: fsys, platform: platform, stdio: stdio}
+// NewClient returns a Client that runs docker through deps.Exec, writes
+// temporary files through deps.FS, stages config mounts with deps.Stager,
+// applies the rules for deps.Platform, and connects containers to deps.Stdio.
+func NewClient(deps Deps) *Client {
+	stager := deps.Stager
+	if stager == nil {
+		stager = noStaging{}
+	}
+	return &Client{exec: deps.Exec, fs: deps.FS, stager: stager, platform: deps.Platform, stdio: deps.Stdio}
+}
+
+// noStaging is the ConfigStager of a Client built without one.
+type noStaging struct{}
+
+func (noStaging) Stage(mounts []plan.ConfigMount) (*configstage.Session, error) {
+	return configstage.Unstaged(mounts), nil
 }
 
 // dockerPath resolves the docker CLI. Every docker call goes through it, so a
@@ -118,7 +146,7 @@ func (c *Client) BuildImage(ctx context.Context, spec plan.BuildSpec) (id string
 	}
 	defer func() {
 		if removeErr := c.fs.RemoveAll(dir); removeErr != nil && err == nil {
-			err = errors.Join(fmt.Errorf("remove temporary build directory: %w", removeErr))
+			err = fmt.Errorf("remove temporary build directory: %w", removeErr)
 		}
 		if err != nil {
 			id = ""
@@ -147,9 +175,10 @@ func (c *Client) BuildImage(ctx context.Context, spec plan.BuildSpec) (id string
 	return strings.TrimSpace(string(data)), nil
 }
 
-// RemoveImage deletes a local image by ID, or removes one tag by repository:tag,
-// never with -f. An image that a
-// container or another tag still uses is an engine.KindImageInUse error.
+// RemoveImage deletes a local image by ID, or removes one tag by
+// repository:tag, never with -f. A missing image is an
+// engine.KindImageNotFound error, and an image that a container or another
+// tag still uses is an engine.KindImageInUse error.
 func (c *Client) RemoveImage(ctx context.Context, id string) error {
 	docker, err := c.dockerPath()
 	if err != nil {
@@ -224,78 +253,4 @@ func (c *Client) ListImages(ctx context.Context, q engine.ImageQuery) ([]engine.
 		return nil, fmt.Errorf("list images: %s: %w", strings.TrimSpace(stderr.String()), err)
 	}
 	return parseImageList(stdout.Bytes())
-}
-
-func hasConfigFileMasks(mounts []plan.ConfigMount) bool {
-	for _, mount := range mounts {
-		if len(mount.MaskFiles) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// RunContainer starts an interactive, disposable container and waits for it to
-// exit. A non-zero container exit is returned unchanged so its code can be
-// passed on.
-func (c *Client) RunContainer(ctx context.Context, spec plan.RunSpec) error {
-	docker, err := c.dockerPath()
-	if err != nil {
-		return err
-	}
-	var piMountIndexes []int
-	var piMounts []system.PiConfigMount
-	for i, mount := range spec.ConfigMounts {
-		if mount.Agent != "pi" {
-			continue
-		}
-		piMountIndexes = append(piMountIndexes, i)
-		piMounts = append(piMounts, system.PiConfigMount{
-			Root: mount.Root, HostPath: mount.HostPath, DestPath: mount.DestPath,
-			MaskPaths: mount.MaskPaths, MaskFiles: mount.MaskFiles, Link: mount.Link,
-		})
-	}
-	stagedMounts, cleanupStage, persistStage, err := system.StagePiMounts(piMounts)
-	if err != nil {
-		return err
-	}
-	for i, mount := range stagedMounts {
-		target := spec.ConfigMounts[piMountIndexes[i]]
-		target.HostPath = mount.HostPath
-		target.MaskPaths = mount.MaskPaths
-		target.MaskFiles = mount.MaskFiles
-		spec.ConfigMounts[piMountIndexes[i]] = target
-	}
-	maskSource := ""
-	if hasConfigFileMasks(spec.ConfigMounts) {
-		dir, err := c.fs.MkdirTemp("", "caged-run-masks-")
-		if err != nil {
-			return errors.Join(fmt.Errorf("create config mask source: %w", err), cleanupStage())
-		}
-		defer func() { _ = c.fs.RemoveAll(dir) }()
-		maskSource = filepath.Join(dir, "empty-file")
-		if err := c.fs.WriteFile(maskSource, nil, 0o600); err != nil {
-			return errors.Join(fmt.Errorf("create config mask file: %w", err), cleanupStage())
-		}
-	}
-	var stderr bytes.Buffer
-	runErr := c.exec.Run(ctx, system.Command{
-		Path:   docker,
-		Args:   runArgs(spec, c.platform, maskSource),
-		Stdin:  c.stdio.In,
-		Stdout: c.stdio.Out,
-		Stderr: io.MultiWriter(c.stdio.Err, &stderr),
-	})
-	persistErr := persistStage()
-	cleanupErr := cleanupStage()
-	if runErr != nil {
-		runErr = classifyRunError(c.platform, spec, stderr.String(), runErr)
-	}
-	if runErr != nil || persistErr != nil || cleanupErr != nil {
-		if persistErr == nil && cleanupErr == nil {
-			return runErr
-		}
-		return errors.Join(runErr, persistErr, cleanupErr)
-	}
-	return nil
 }

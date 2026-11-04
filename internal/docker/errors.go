@@ -37,7 +37,7 @@ func portInUseMessage(ports []plan.Port, stderr string) string {
 	for _, port := range ports {
 		if mentionsHostPort(stderr, port) {
 			alternative := port.HostPort + 1
-			if alternative > 65535 {
+			if alternative > plan.MaxPort {
 				alternative = port.HostPort - 1
 			}
 			return fmt.Sprintf("host port %d is already in use on %s; stop the process using it or pick another host port, e.g. -p %d:%d",
@@ -62,4 +62,16 @@ func mentionsHostPort(stderr string, port plan.Port) bool {
 		}
 		rest = rest[i+1:]
 	}
+}
+
+// looksLikeMissingImage recognizes docker's "no such image" reply.
+func looksLikeMissingImage(stderr string) bool {
+	return strings.Contains(strings.ToLower(stderr), "no such image")
+}
+
+// looksLikeImageInUse recognizes docker's refusal to remove an image that a
+// container or another tag still uses.
+func looksLikeImageInUse(stderr string) bool {
+	stderr = strings.ToLower(stderr)
+	return strings.Contains(stderr, "conflict") || strings.Contains(stderr, "being used") || strings.Contains(stderr, "is using")
 }

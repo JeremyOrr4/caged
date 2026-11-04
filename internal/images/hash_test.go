@@ -58,3 +58,16 @@ func TestContextHash(t *testing.T) {
 		})
 	}
 }
+
+// TestContextHashKnownAnswer pins the hash itself, not only its properties: a
+// change to the encoding would rebuild every user's image once. The expected
+// value was computed outside Go, with Python's hashlib over the documented
+// encoding (prefix, then per file sorted by name: name, octal mode, length, data).
+func TestContextHashKnownAnswer(t *testing.T) {
+	t.Parallel()
+
+	files := []plan.File{{Name: "b", Mode: 0o644, Data: []byte("two\n")}, {Name: "a", Mode: 0o755, Data: []byte("one")}}
+	if got, want := ContextHash(files), "611767621eabf2e8130fce8fbe24075bd9583d5073e05022cb1b4b8e7dfc44e5"; got != want {
+		t.Errorf("ContextHash = %s, want %s", got, want)
+	}
+}

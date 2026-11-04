@@ -9,23 +9,8 @@ import (
 
 	"github.com/JeremyOrr4/caged/internal/agent"
 	"github.com/JeremyOrr4/caged/internal/plan"
+	"github.com/JeremyOrr4/caged/internal/testkit"
 )
-
-// fakeEnv is a fixed process environment.
-type fakeEnv struct {
-	vars    map[string]string
-	home    string
-	homeErr error
-	wd      string
-	wdErr   error
-}
-
-func (e *fakeEnv) LookupEnv(key string) (string, bool) {
-	value, ok := e.vars[key]
-	return value, ok
-}
-func (e *fakeEnv) UserHomeDir() (string, error) { return e.home, e.homeErr }
-func (e *fakeEnv) Getwd() (string, error)       { return e.wd, e.wdErr }
 
 // fakeProject records the arguments it was asked to resolve.
 type fakeProject struct {
@@ -66,7 +51,7 @@ func lookup(t *testing.T, name string) *agent.Agent {
 func TestPlannerCombinesMountsConfigsAndEnv(t *testing.T) {
 	t.Parallel()
 
-	env := &fakeEnv{vars: map[string]string{"ANTHROPIC_API_KEY": "secret", "EXTRA": ""}, home: "/Users/dev", wd: "/Users/dev/app"}
+	env := &testkit.Env{Vars: map[string]string{"ANTHROPIC_API_KEY": "secret", "EXTRA": ""}, Home: "/Users/dev", WorkDir: "/Users/dev/app"}
 	project := &fakeProject{}
 	configs := &fakeConfigs{report: plan.ConfigReport{
 		Mounts:  []plan.ConfigMount{{Agent: "claude", Name: ".claude", HostPath: "/Users/dev/.claude", DestPath: "/home/caged/.claude", Writable: true}},
@@ -113,7 +98,7 @@ func TestPlannerReturnsTheConfigResolverError(t *testing.T) {
 	t.Parallel()
 
 	resolveErr := errors.New("~/.config/caged/config.yaml: line 1: unknown field \"imgae\"")
-	env := &fakeEnv{home: "/Users/dev", wd: "/Users/dev/app"}
+	env := &testkit.Env{Home: "/Users/dev", WorkDir: "/Users/dev/app"}
 	_, err := NewPlanner(env, &fakeProject{}, &fakeConfigs{err: resolveErr}).Plan(Request{}, "img", NewReporter(io.Discard, false))
 	if !errors.Is(err, resolveErr) {
 		t.Fatalf("Plan() error = %v, want %v", err, resolveErr)
@@ -123,7 +108,7 @@ func TestPlannerReturnsTheConfigResolverError(t *testing.T) {
 func TestPlannerLogsFollowedLinksAndRefusalHints(t *testing.T) {
 	t.Parallel()
 
-	env := &fakeEnv{home: "/Users/dev", wd: "/Users/dev/app"}
+	env := &testkit.Env{Home: "/Users/dev", WorkDir: "/Users/dev/app"}
 	configs := &fakeConfigs{report: plan.ConfigReport{
 		Mounts: []plan.ConfigMount{{Agent: "claude", Name: ".claude", HostPath: "/Users/dev/dot/CLAUDE.md", DestPath: "/home/caged/.claude/CLAUDE.md", Link: "/Users/dev/.claude/CLAUDE.md"}},
 		Refused: []plan.Refusal{{
@@ -149,7 +134,7 @@ func TestPlannerUsesWorkDirFlagWithoutReadingCwd(t *testing.T) {
 	t.Parallel()
 
 	project := &fakeProject{}
-	env := &fakeEnv{home: "/home/dev", wdErr: errors.New("cwd must not be read")}
+	env := &testkit.Env{Home: "/home/dev", WorkDirErr: errors.New("cwd must not be read")}
 	if _, err := NewPlanner(env, project, &fakeConfigs{}).Plan(Request{WorkDir: "../other", NoConfig: true}, "img", NewReporter(io.Discard, false)); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +147,7 @@ func TestNoMountAndWorkdirAreIncompatible(t *testing.T) {
 	t.Parallel()
 
 	request := Request{NoMount: true, WorkDir: "/tmp"}
-	_, err := NewPlanner(&fakeEnv{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(io.Discard, false))
+	_, err := NewPlanner(&testkit.Env{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(io.Discard, false))
 	if err == nil || !strings.Contains(err.Error(), "cannot be used with --no-mount") {
 		t.Fatalf("Plan() error = %v, want incompatible-flags error", err)
 	}
@@ -171,7 +156,7 @@ func TestNoMountAndWorkdirAreIncompatible(t *testing.T) {
 func TestPlannerNoMountNoConfigNeedsNoHomeOrCwd(t *testing.T) {
 	t.Parallel()
 
-	env := &fakeEnv{homeErr: errors.New("no home"), wdErr: errors.New("no cwd")}
+	env := &testkit.Env{HomeErr: errors.New("no home"), WorkDirErr: errors.New("no cwd")}
 	var stderr strings.Builder
 	spec, err := NewPlanner(env, &fakeProject{}, &fakeConfigs{}).Plan(Request{NoMount: true, NoConfig: true}, "img", NewReporter(&stderr, false))
 	if err != nil {
@@ -191,17 +176,17 @@ func TestPlannerErrors(t *testing.T) {
 	prompt := "hello"
 	tests := []struct {
 		name    string
-		env     *fakeEnv
+		env     *testkit.Env
 		project *fakeProject
 		request Request
 		want    string
 	}{
-		{name: "cwd", env: &fakeEnv{wdErr: errors.New("gone")}, request: Request{NoConfig: true}, want: "get current working directory: gone"},
-		{name: "home for project", env: &fakeEnv{wd: "/w", homeErr: errors.New("unset")}, request: Request{NoConfig: true}, want: "find home directory: unset"},
-		{name: "home for config", env: &fakeEnv{homeErr: errors.New("unset")}, request: Request{NoMount: true}, want: "find home directory: unset"},
-		{name: "project", env: &fakeEnv{wd: "/w"}, project: &fakeProject{err: errors.New("refusing")}, request: Request{NoConfig: true}, want: "refusing"},
-		{name: "prompt without agent", env: &fakeEnv{}, request: Request{Prompt: &prompt, NoMount: true, NoConfig: true}, want: "a prompt requires an agent"},
-		{name: "agent without prompt support", env: &fakeEnv{}, request: Request{Agent: lookup(t, "gh"), Prompt: &prompt, NoMount: true, NoConfig: true}, want: "gh does not support prompt launch"},
+		{name: "cwd", env: &testkit.Env{WorkDirErr: errors.New("gone")}, request: Request{NoConfig: true}, want: "get current working directory: gone"},
+		{name: "home for project", env: &testkit.Env{WorkDir: "/w", HomeErr: errors.New("unset")}, request: Request{NoConfig: true}, want: "find home directory: unset"},
+		{name: "home for config", env: &testkit.Env{HomeErr: errors.New("unset")}, request: Request{NoMount: true}, want: "find home directory: unset"},
+		{name: "project", env: &testkit.Env{WorkDir: "/w"}, project: &fakeProject{err: errors.New("refusing")}, request: Request{NoConfig: true}, want: "refusing"},
+		{name: "prompt without agent", env: &testkit.Env{}, request: Request{Prompt: &prompt, NoMount: true, NoConfig: true}, want: "a prompt requires an agent"},
+		{name: "agent without prompt support", env: &testkit.Env{}, request: Request{Agent: lookup(t, "gh"), Prompt: &prompt, NoMount: true, NoConfig: true}, want: "gh does not support prompt launch"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -219,13 +204,13 @@ func TestPlannerErrors(t *testing.T) {
 
 // countingEnv counts home directory lookups.
 type countingEnv struct {
-	fakeEnv
+	testkit.Env
 	homeCalls int
 }
 
 func (e *countingEnv) UserHomeDir() (string, error) {
 	e.homeCalls++
-	return e.fakeEnv.UserHomeDir()
+	return e.Env.UserHomeDir()
 }
 
 func TestPlannerResolvesHomeOnce(t *testing.T) {
@@ -244,7 +229,7 @@ func TestPlannerResolvesHomeOnce(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			env := &countingEnv{fakeEnv: fakeEnv{home: "/home/dev", wd: "/home/dev/app"}}
+			env := &countingEnv{Home: "/home/dev", WorkDir: "/home/dev/app"}
 			if _, err := NewPlanner(env, &fakeProject{}, &fakeConfigs{}).Plan(tt.request, "img", NewReporter(io.Discard, false)); err != nil {
 				t.Fatal(err)
 			}
@@ -262,7 +247,7 @@ func TestPlannerPublishedPorts(t *testing.T) {
 		t.Parallel()
 		var stderr strings.Builder
 		request := Request{NoMount: true, NoConfig: true, Verbose: true, Ports: []string{"3000", "8080:4000"}}
-		spec, err := NewPlanner(&fakeEnv{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(&stderr, true))
+		spec, err := NewPlanner(&testkit.Env{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(&stderr, true))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -279,7 +264,7 @@ func TestPlannerPublishedPorts(t *testing.T) {
 		t.Parallel()
 		var stderr strings.Builder
 		request := Request{NoMount: true, NoConfig: true, Ports: []string{"3000"}}
-		if _, err := NewPlanner(&fakeEnv{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(&stderr, false)); err != nil {
+		if _, err := NewPlanner(&testkit.Env{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(&stderr, false)); err != nil {
 			t.Fatal(err)
 		}
 		if stderr.Len() != 0 {
@@ -289,7 +274,7 @@ func TestPlannerPublishedPorts(t *testing.T) {
 	t.Run("a bad port fails before the warning and before any resolver runs", func(t *testing.T) {
 		t.Parallel()
 		var stderr strings.Builder
-		env := &fakeEnv{home: "/home/dev", wd: "/home/dev/app"}
+		env := &testkit.Env{Home: "/home/dev", WorkDir: "/home/dev/app"}
 		project, configs := &fakeProject{}, &fakeConfigs{}
 		request := Request{Ports: []string{"70000"}}
 		_, err := NewPlanner(env, project, configs).Plan(request, "img", NewReporter(&stderr, true))
@@ -326,7 +311,7 @@ func TestPlannerPassesAgentArgsAndLogsTheCommand(t *testing.T) {
 			var stderr strings.Builder
 			request := tt.request
 			request.NoMount, request.NoConfig, request.Verbose = true, true, true
-			spec, err := NewPlanner(&fakeEnv{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(&stderr, true))
+			spec, err := NewPlanner(&testkit.Env{}, &fakeProject{}, &fakeConfigs{}).Plan(request, "img", NewReporter(&stderr, true))
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("Plan() error = %v, want %q", err, tt.wantErr)

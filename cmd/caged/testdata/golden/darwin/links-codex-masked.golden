@@ -16,6 +16,7 @@ config: pass $ROOT/home/.gemini/settings.json -> /home/caged/.gemini/current-set
 config: pass $ROOT/home/.config/gh -> /home/caged/.config/gh
 config: pass $ROOT/home/.pi -> /home/caged/.pi
 config: pass $ROOT/home/.gitconfig -> /home/caged/.gitconfig
+config: pass $ROOT/home/.config/caged -> /home/caged/.config/caged
 config: refused $ROOT/home/.config/pi (symlink target $ROOT/outside/pi is not under links.allow); add "- path: $ROOT/outside/pi" under links.allow in ~/.config/caged/config.yaml
 env: skipped OPENAI_API_KEY (unset or disallowed)
 env: skipped ANTHROPIC_API_KEY (unset or disallowed)
@@ -70,6 +71,8 @@ $ROOT/home/.config/gh:/home/caged/.config/gh
 $ROOT/home/.pi:/home/caged/.pi
 -v
 $ROOT/home/.gitconfig:/home/caged/.gitconfig:ro
+-v
+$ROOT/home/.config/caged:/home/caged/.config/caged
 -e
 CAGED_RETURN_TO_SHELL=1
 caged-runtime:latest

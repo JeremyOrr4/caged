@@ -6,17 +6,16 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
-	"github.com/JeremyOrr4/caged/internal/agent"
 	"github.com/JeremyOrr4/caged/internal/plan"
-	"github.com/JeremyOrr4/caged/internal/system"
 )
 
 const wantHintPrefix = `add "- path: `
 
 // writeFiles creates files under home, with their directories.
-func writeFiles(t *testing.T, home string, files ...string) {
+func writeFiles(t testing.TB, home string, files ...string) {
 	t.Helper()
 	for _, file := range files {
 		path := filepath.Join(home, file)
@@ -30,7 +29,7 @@ func writeFiles(t *testing.T, home string, files ...string) {
 }
 
 // symlink creates the symlink link under home, pointing at text.
-func symlink(t *testing.T, home, link, text string) {
+func symlink(t testing.TB, home, link, text string) {
 	t.Helper()
 	path := filepath.Join(home, link)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -325,88 +324,6 @@ func TestReadOnlyRootMountsLinksReadOnly(t *testing.T) {
 	}
 }
 
-func TestCodexTreeWithARelativeLinkKeepsTheWholeMount(t *testing.T) {
-	t.Parallel()
-	home, resolved := testHome(t, nil, nil)
-	writeFiles(t, home, ".codex/config.toml", "dotfiles/codex/AGENTS.md")
-	symlink(t, home, ".codex/AGENTS.md", "../dotfiles/codex/AGENTS.md")
-
-	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
-
-	tree := mustMount(t, report, "/home/caged/.codex")
-	if tree.HostPath != filepath.Join(resolved, ".codex") || len(tree.MaskPaths) == 0 || tree.Link != "" {
-		t.Fatalf("Codex tree mount = %+v", tree)
-	}
-	link := mustMount(t, report, "/home/caged/dotfiles/codex/AGENTS.md")
-	if link.HostPath != filepath.Join(resolved, "dotfiles/codex/AGENTS.md") || link.Link != filepath.Join(resolved, ".codex/AGENTS.md") {
-		t.Fatalf("link mount = %+v", link)
-	}
-
-	// Without an allowed root the tree stays mounted and only the link is refused.
-	report = resolveConfigs(t, home, nil)
-	mustMount(t, report, "/home/caged/.codex")
-	if _, ok := mountAt(report, "/home/caged/dotfiles/codex/AGENTS.md"); ok {
-		t.Fatal("the link target was mounted without links.allow")
-	}
-	if refusal := mustRefuse(t, report, filepath.Join(resolved, ".codex/AGENTS.md")); !strings.HasPrefix(refusal.Hint, wantHintPrefix) {
-		t.Fatalf("Hint = %q", refusal.Hint)
-	}
-}
-
-func TestCodexTreeWithAnAbsoluteLinkMountsAtTheSamePath(t *testing.T) {
-	t.Parallel()
-	// The container refuses absolute link targets under /tmp, where t.TempDir
-	// lives, so this home is created next to the test. A checkout that itself
-	// lives under a reserved container path (/tmp, /var, /opt, ...) cannot
-	// run it; containerLinkDest covers absolute links on their own.
-	base, err := filepath.Abs(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, reserved := range reservedContainerPaths() {
-		if withinSlash(filepath.ToSlash(base), reserved) {
-			t.Skipf("the checkout is under %s, which absolute link targets may not use", reserved)
-		}
-	}
-	home, err := os.MkdirTemp(base, "absolute-link-home-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	resolved, err := filepath.EvalSymlinks(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeFiles(t, home, ".codex/config.toml", "dotfiles/codex/AGENTS.md")
-	symlink(t, home, ".codex/AGENTS.md", filepath.Join(home, "dotfiles/codex/AGENTS.md"))
-
-	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
-
-	dest := filepath.ToSlash(filepath.Join(home, "dotfiles/codex/AGENTS.md"))
-	mount := mustMount(t, report, dest)
-	if mount.HostPath != filepath.Join(resolved, "dotfiles/codex/AGENTS.md") {
-		t.Fatalf("mount = %+v", mount)
-	}
-	mustMount(t, report, "/home/caged/.codex")
-}
-
-func TestMaskedLinkLandingInsideAnotherMountIsRefused(t *testing.T) {
-	t.Parallel()
-	home, resolved := testHome(t, nil, nil)
-	writeFiles(t, home, ".claude/settings.json", ".codex/config.toml")
-	symlink(t, home, ".codex/y", "../.claude/settings.json")
-
-	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, ".claude")}})
-
-	mustMount(t, report, "/home/caged/.claude")
-	if mount, ok := mountAt(report, "/home/caged/.claude/settings.json"); ok {
-		t.Fatalf("a mount landed inside another mount: %+v", mount)
-	}
-	if refusal := mustRefuse(t, report, filepath.Join(resolved, ".codex/y")); !strings.Contains(refusal.Reason, "inside another mount") {
-		t.Fatalf("Reason = %q", refusal.Reason)
-	}
-}
-
 func TestMoreThanSixtyFourLinksAreNotFollowed(t *testing.T) {
 	t.Parallel()
 	home, _ := testHome(t, nil, nil)
@@ -431,18 +348,46 @@ func TestMoreThanSixtyFourLinksAreNotFollowed(t *testing.T) {
 	}
 }
 
-func TestResolvePiTreeListedTwiceKeepsMaskFilesOnTheRoot(t *testing.T) {
-	home, _ := testHome(t, []string{".st"}, []string{".st/a.json"})
-	if err := os.Symlink("a.json", filepath.Join(home, ".st", "filelink")); err != nil {
+func TestNestedSymlinkedDirectoriesStopAtDepthEight(t *testing.T) {
+	t.Parallel()
+	home, resolved := testHome(t, nil, nil)
+	writeFiles(t, home, ".claude/settings.json")
+	symlink(t, home, ".claude/next", "../dotfiles/d1")
+	for i := 1; i <= 10; i++ {
+		writeFiles(t, home, fmt.Sprintf("dotfiles/d%d/f", i))
+		symlink(t, home, fmt.Sprintf("dotfiles/d%d/next", i), fmt.Sprintf("../d%d", i+1))
+	}
+
+	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
+
+	want := []string{filepath.Join(resolved, "dotfiles/d8/next") + " (too many nested symlinked directories)"}
+	if got := refusedStrings(report.Refused); !slices.Equal(got, want) {
+		t.Fatalf("Refused = %v, want %v", got, want)
+	}
+	mustMount(t, report, "/home/caged/.claude/next/next/next/next/next/next/next/next/f")
+	if _, ok := mountAt(report, "/home/caged/.claude/next/next/next/next/next/next/next/next/next/f"); ok {
+		t.Fatal("a ninth nested symlinked directory was mounted")
+	}
+}
+
+func TestLinkToASpecialFileIsRefused(t *testing.T) {
+	t.Parallel()
+	home, resolved := testHome(t, nil, nil)
+	writeFiles(t, home, ".claude/settings.json")
+	if err := os.MkdirAll(filepath.Join(home, "dotfiles"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := agent.ConfigPath{HostPath: ".st", ContainerPath: ".st", Writable: true}
-	agents := []agent.Agent{{Name: "pi", Command: []string{"pi"}, ConfigPaths: []agent.ConfigPath{path, path}}}
-	report, err := NewResolver(system.FS{}, fakeEnv{}, agents, nil, policies{}).Resolve(home)
-	if err != nil {
+	if err := syscall.Mkfifo(filepath.Join(home, "dotfiles", "pipe"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Mounts) != 2 || len(report.Mounts[0].MaskFiles) != 1 || len(report.Mounts[1].MaskFiles) != 0 {
-		t.Fatalf("Mounts = %+v, want the root with one mask file and the link target with none", report.Mounts)
+	symlink(t, home, ".claude/pipe", "../dotfiles/pipe")
+
+	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
+
+	if refusal := mustRefuse(t, report, filepath.Join(resolved, ".claude/pipe")); refusal.Reason != "symlink target is not a regular file or directory" {
+		t.Fatalf("Reason = %q", refusal.Reason)
+	}
+	if _, ok := mountAt(report, "/home/caged/.claude/pipe"); ok {
+		t.Fatal("a link to a FIFO was mounted")
 	}
 }

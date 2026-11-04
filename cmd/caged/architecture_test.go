@@ -19,19 +19,22 @@ const modulePath = "github.com/JeremyOrr4/caged"
 // imports an adapter, and agent and system import nothing from caged.
 func allowedImports() map[string][]string {
 	return map[string][]string{
-		"cmd/caged":           {"internal/agent", "internal/app", "internal/cli", "internal/docker", "internal/hostconfig", "internal/project", "internal/system", "internal/userconfig"},
-		"internal/cli":        {"internal/agent", "internal/app"},
-		"internal/app":        {"internal/agent", "internal/engine", "internal/images", "internal/plan"},
-		"internal/docker":     {"internal/engine", "internal/plan", "internal/system"},
-		"internal/engine":     {},
-		"internal/hostconfig": {"internal/agent", "internal/pathpolicy", "internal/plan"},
-		"internal/pathpolicy": {},
-		"internal/project":    {"internal/pathpolicy", "internal/plan"},
-		"internal/userconfig": {"internal/pathpolicy", "internal/plan"},
-		"internal/images":     {"internal/plan"},
-		"internal/plan":       {},
-		"internal/agent":      {},
-		"internal/system":     {},
+		"cmd/caged":            {"internal/agent", "internal/app", "internal/cli", "internal/configstage", "internal/docker", "internal/hostconfig", "internal/project", "internal/system", "internal/userconfig"},
+		"internal/cli":         {"internal/agent", "internal/app"},
+		"internal/app":         {"internal/agent", "internal/engine", "internal/images", "internal/pathpolicy", "internal/plan", "internal/textdiff"},
+		"internal/configstage": {"internal/plan"},
+		"internal/docker":      {"internal/configstage", "internal/engine", "internal/plan", "internal/system"},
+		"internal/engine":      {},
+		"internal/hostconfig":  {"internal/agent", "internal/pathpolicy", "internal/plan"},
+		"internal/pathpolicy":  {},
+		"internal/project":     {"internal/pathpolicy", "internal/plan"},
+		"internal/userconfig":  {"internal/pathpolicy", "internal/plan"},
+		"internal/images":      {"internal/plan"},
+		"internal/plan":        {},
+		"internal/agent":       {},
+		"internal/system":      {},
+		"internal/textdiff":    {},
+		"internal/testkit":     {}, // test fakes; no production package may import it
 	}
 }
 
@@ -114,6 +117,21 @@ func TestPackageDependenciesPointInward(t *testing.T) {
 			}
 			if !ok {
 				t.Errorf("%s: %s must not import %s", file.path, file.pkg, target)
+			}
+		}
+	}
+}
+
+// TestTestkitIsOnlyForTests keeps internal/testkit out of the product: no
+// package may list it, so TestPackageDependenciesPointInward fails on any
+// production import of it. Only _test.go files (not checked) import it.
+func TestTestkitIsOnlyForTests(t *testing.T) {
+	t.Parallel()
+
+	for pkg, permitted := range allowedImports() {
+		for _, dep := range permitted {
+			if dep == "internal/testkit" {
+				t.Errorf("%s may import internal/testkit, which is for _test.go files only", pkg)
 			}
 		}
 	}

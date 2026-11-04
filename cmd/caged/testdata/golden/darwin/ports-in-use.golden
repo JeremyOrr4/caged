@@ -5,6 +5,7 @@ leftover temp entries: 0
 === stdout
 fake docker run output
 === stderr
+caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 WARNING: allowlisted agent credentials are available inside the container.
 docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint x: failed to bind host port 127.0.0.1:8080/tcp: address already in use
 host port 8080 is already in use on 127.0.0.1; stop the process using it or pick another host port, e.g. -p 8081:3000: exit status 125
@@ -54,6 +55,8 @@ $ROOT/home/.config/gh:/home/caged/.config/gh
 $ROOT/home/.pi:/home/caged/.pi
 -v
 $ROOT/home/.gitconfig:/home/caged/.gitconfig:ro
+-v
+$ROOT/home/.config/caged:/home/caged/.config/caged
 -e
 CAGED_RETURN_TO_SHELL=1
 caged-runtime:latest

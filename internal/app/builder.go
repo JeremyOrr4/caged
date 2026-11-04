@@ -8,7 +8,10 @@ import (
 )
 
 // BuildOptions are the settings of one build.
-type BuildOptions struct{ NoCache bool }
+type BuildOptions struct {
+	NoCache     bool
+	TrustConfig bool // approve a changed config.yaml without asking
+}
 
 // BuiltImage describes one image a build produced.
 type BuiltImage struct {
@@ -42,5 +45,5 @@ func (b *Builder) Build(ctx context.Context, opts BuildOptions) ([]BuiltImage, e
 	if _, err := b.daemon.Daemon(ctx); err != nil {
 		return nil, err
 	}
-	return b.ensurer.BuildAll(ctx, ext, opts, NewReporter(b.stderr, false))
+	return b.ensurer.rebuildImages(ctx, ext, opts, NewReporter(b.stderr, false))
 }

@@ -45,7 +45,7 @@ func TestRunSpecCopiesInputs(t *testing.T) {
 	command := selected.Command[0]
 	prompt := "prompt"
 	mount := &plan.Mount{HostPath: "/project", ContainerPath: "/workspace/project"}
-	configMounts := []plan.ConfigMount{{HostPath: "/home/user/.claude", DestPath: "/home/caged/.claude", Writable: true}}
+	configMounts := []plan.ConfigMount{{HostPath: "/home/user/.claude", DestPath: "/home/caged/.claude", Writable: true, MaskPaths: []string{"/home/caged/.claude/secret"}, MaskFiles: []string{"/home/caged/.claude/token"}}}
 	env := []string{"ANTHROPIC_API_KEY"}
 	spec, err := buildRunSpec(runInputs{Image: "image", Agent: &selected, Prompt: &prompt, Mount: mount, Configs: configMounts, Env: env})
 	if err != nil {
@@ -53,9 +53,14 @@ func TestRunSpecCopiesInputs(t *testing.T) {
 	}
 	spec.Command[0] = "changed"
 	spec.ConfigMounts[0].Name = "changed"
+	spec.ConfigMounts[0].MaskPaths[0] = "changed"
+	spec.ConfigMounts[0].MaskFiles[0] = "changed"
 	spec.EnvVars[0] = "changed"
 	if selected.Command[0] != command || configMounts[0].Name == "changed" || env[0] == "changed" {
 		t.Fatal("run spec mutated source inputs")
+	}
+	if configMounts[0].MaskPaths[0] == "changed" || configMounts[0].MaskFiles[0] == "changed" {
+		t.Fatalf("run spec shares mask slices with its inputs: %+v", configMounts[0])
 	}
 }
 

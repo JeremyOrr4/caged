@@ -5,7 +5,9 @@ package pathpolicy
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
+	"unicode"
 )
 
 // Root is one configured path of an allow or deny list.
@@ -42,19 +44,27 @@ type Decision struct {
 }
 
 // Policy is an immutable allow and deny list.
-type Policy struct{ cfg Config }
+type Policy struct {
+	cfg      Config
+	foldCase bool // deny roots and the home directory match in any case
+}
 
 // New validates cfg and returns its policy. An allow root must be absolute,
 // must not contain the home directory (so "/" and "~" are refused as too
 // broad), and must not lie inside a deny root.
 func New(cfg Config) (*Policy, error) {
+	return newPolicy(cfg, false)
+}
+
+// newPolicy is New, comparing names in any case when foldCase is set.
+func newPolicy(cfg Config, foldCase bool) (*Policy, error) {
 	cfg.Home = filepath.Clean(cfg.Home)
 	if cfg.ResolvedHome == "" {
 		cfg.ResolvedHome = cfg.Home
 	}
 	cfg.ResolvedHome = filepath.Clean(cfg.ResolvedHome)
 	cfg.Allow, cfg.Deny = normalize(cfg.Allow), normalize(cfg.Deny)
-	p := &Policy{cfg: cfg}
+	p := &Policy{cfg: cfg, foldCase: foldCase}
 	for _, root := range cfg.Allow {
 		for _, form := range root.Forms {
 			if !filepath.IsAbs(form) {
@@ -63,12 +73,8 @@ func New(cfg Config) (*Policy, error) {
 			if p.tooBroad(form) {
 				return nil, fmt.Errorf("%s: %s entry %q is too broad: it contains the home directory", cfg.Source, cfg.Field, p.tilde(root.Path))
 			}
-			for _, deny := range cfg.Deny {
-				for _, denyForm := range deny.Forms {
-					if Within(form, denyForm) {
-						return nil, fmt.Errorf("%s: %s entry %q is inside the denied path %q", cfg.Source, cfg.Field, p.tilde(root.Path), p.tilde(deny.Path))
-					}
-				}
+			if deny, ok := p.denyHolding(form); ok {
+				return nil, fmt.Errorf("%s: %s entry %q is inside the denied path %q", cfg.Source, cfg.Field, p.tilde(root.Path), p.tilde(deny.Path))
 			}
 		}
 	}
@@ -82,12 +88,7 @@ func normalize(roots []Root) []Root {
 		root.Path = filepath.Clean(root.Path)
 		forms := []string{root.Path}
 		for _, form := range root.Forms {
-			form = filepath.Clean(form)
-			duplicate := false
-			for _, existing := range forms {
-				duplicate = duplicate || existing == form
-			}
-			if !duplicate {
+			if form = filepath.Clean(form); !slices.Contains(forms, form) {
 				forms = append(forms, form)
 			}
 		}
@@ -110,7 +111,7 @@ func (p *Policy) Check(resolved string, lexical ...string) Decision {
 	for _, deny := range p.cfg.Deny {
 		for _, form := range deny.Forms {
 			for _, candidate := range candidates {
-				if Within(candidate, form) || Within(form, candidate) {
+				if p.Overlap(candidate, form) {
 					return Decision{Verdict: Denied, Root: deny}
 				}
 			}
@@ -126,9 +127,45 @@ func (p *Policy) Check(resolved string, lexical ...string) Decision {
 	return Decision{Verdict: NotAllowed}
 }
 
+// Without returns a copy of the policy without the deny root at path. It
+// exists for the one mount that is exactly such a path, caged's own config
+// directory: reaching it through a symlink is judged by the allow list and
+// every other deny root, not by its own deny entry. The original policy is
+// unchanged.
+func (p *Policy) Without(path string) *Policy {
+	cfg := p.cfg
+	cfg.Deny = nil
+	for _, deny := range p.cfg.Deny {
+		if deny.Path != filepath.Clean(path) {
+			cfg.Deny = append(cfg.Deny, deny)
+		}
+	}
+	return &Policy{cfg: cfg, foldCase: p.foldCase}
+}
+
+// FoldCase returns a copy of the policy for a file system that ignores case
+// in names, as macOS's does by default, where ~/.SSH is ~/.ssh. Deny roots,
+// the home directory and Overlap then match in any case (FoldName), and the
+// allow roots are validated again under that rule, as New does: the home
+// directory in other letters is too broad. Allow roots still match exactly,
+// so a name in other letters can only be refused, never allowed by mistake.
+// The original policy is unchanged.
+func (p *Policy) FoldCase() (*Policy, error) {
+	return newPolicy(p.cfg, true)
+}
+
+// Overlap reports whether path and other are one path or one lies inside the
+// other, comparing names as the policy's file system does.
+func (p *Policy) Overlap(path, other string) bool {
+	return p.within(path, other) || p.within(other, path)
+}
+
 // Remedy returns the one line that tells the user how to act on a refusal of
 // target, or "" for an allowed decision. For a file the suggestion is its
-// directory, unless that directory would be too broad.
+// directory, unless that directory would be too broad. So is it for a
+// directory New would reject as an allow root: one inside a deny root, which
+// a policy made by Without can refuse as not allowed (caged's own config
+// folder, linked elsewhere).
 func (p *Policy) Remedy(d Decision, target string, isDir bool) string {
 	switch d.Verdict {
 	case Denied:
@@ -138,7 +175,7 @@ func (p *Policy) Remedy(d Decision, target string, isDir bool) string {
 		return fmt.Sprintf("%s is denied by links.deny in %s", p.tilde(d.Root.Path), p.cfg.Source)
 	case NotAllowed:
 		suggest := filepath.Clean(target)
-		if !isDir {
+		if _, denied := p.denyHolding(suggest); !isDir || denied {
 			if dir := filepath.Dir(suggest); !p.tooBroad(dir) {
 				suggest = dir
 			}
@@ -158,9 +195,45 @@ func (p *Policy) AllowPaths() []string {
 	return paths
 }
 
+// denyHolding returns the first deny root with a form that holds path. New
+// refuses such a path as an allow root.
+func (p *Policy) denyHolding(path string) (Root, bool) {
+	for _, deny := range p.cfg.Deny {
+		for _, form := range deny.Forms {
+			if p.within(path, form) {
+				return deny, true
+			}
+		}
+	}
+	return Root{}, false
+}
+
 // tooBroad reports whether path is the home directory or one of its ancestors.
 func (p *Policy) tooBroad(path string) bool {
-	return Within(p.cfg.Home, path) || Within(p.cfg.ResolvedHome, path)
+	return p.within(p.cfg.Home, path) || p.within(p.cfg.ResolvedHome, path)
+}
+
+// within is Within, in any case when the policy folds case.
+func (p *Policy) within(path, root string) bool {
+	if p.foldCase {
+		return Within(FoldName(path), FoldName(root))
+	}
+	return Within(path, root)
+}
+
+// FoldName returns name in a canonical simple case folding, the rule
+// strings.EqualFold applies: every rune becomes the smallest rune of its
+// unicode.SimpleFold orbit, so "S", "s" and the long s "ſ" are one letter.
+// It neither expands letters (ß stays ß, not ss) nor normalizes Unicode (an
+// NFD name stays apart from its NFC form).
+func FoldName(name string) string {
+	return strings.Map(func(r rune) rune {
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			least = min(least, f)
+		}
+		return least
+	}, name)
 }
 
 // tilde shows path with the home directory, in either form, as "~".
@@ -183,7 +256,10 @@ func Tilde(home, path string) string {
 	return path
 }
 
-// Within reports whether path is root itself or inside it.
+// Within reports whether path is root itself or inside it. It compares the
+// cleaned names only and never resolves a symlink, so callers decide which form
+// of a path they ask about. It is the containment test for host paths. A
+// relative path is never within an absolute root, nor the other way round.
 func Within(path, root string) bool {
 	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	if err != nil {

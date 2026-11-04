@@ -24,7 +24,6 @@ const (
 // CleanResult is one image caged found, and what happened to it.
 type CleanResult struct {
 	Ref     string // repository:tag, or "<untagged> sha256:<12>"
-	ID      string // the image ID
 	Size    string
 	Outcome CleanOutcome
 	Reason  string // why a Kept image was kept
@@ -61,7 +60,7 @@ func (c *Cleaner) Clean(ctx context.Context, opts CleanOptions) ([]CleanResult, 
 	queries := []engine.ImageQuery{
 		{Label: images.LabelRole + "=" + string(images.RoleExtension)},
 		{Label: images.LabelRole + "=" + string(images.RoleRuntime)},
-		{Reference: "caged-runtime"},
+		{Reference: images.Repository},
 	}
 	// A tagged image is removed by its tag and an untagged one by its ID. An
 	// image with several tags is removed one tag at a time, which Docker allows;
@@ -82,7 +81,7 @@ func (c *Cleaner) Clean(ctx context.Context, opts CleanOptions) ([]CleanResult, 
 	}
 	var results []CleanResult
 	for _, image := range found {
-		result := CleanResult{Ref: describeImage(image), ID: image.ID, Size: image.Size, Outcome: WouldRemove}
+		result := CleanResult{Ref: describeImage(image), Size: image.Size, Outcome: WouldRemove}
 		if !opts.DryRun {
 			result.Outcome = Removed
 			if err := c.store.RemoveImage(ctx, removalTarget(image)); err != nil && !engine.IsKind(err, engine.KindImageNotFound) {

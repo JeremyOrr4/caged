@@ -16,7 +16,7 @@ func TestRunnerRun(t *testing.T) {
 	t.Parallel()
 
 	const version = "test"
-	loadErr := errors.New("~/.config/caged/image.json: unknown field \"npm\"; only \"apt\" is supported")
+	loadErr := errors.New("~/.config/caged/config.yaml: line 2: unknown field \"npm\"")
 	planErr := errors.New("plan failed")
 	daemonErr := &engine.Error{Kind: engine.KindDaemonDown, Message: "daemon unavailable"}
 	buildErr := errors.New("build failed")
@@ -99,7 +99,7 @@ func TestRunnerRun(t *testing.T) {
 			exts:       fakeExts{ext: ext},
 			store:      fakeStore{images: baseImage(currentImage(version))},
 			wantCalls:  []string{"load", "plan", "daemon", inspectBase, inspectExt, buildExt, "run"},
-			wantStderr: "Building image extension from ~/.config/caged/image.json (apt: neovim, tmux)...\n",
+			wantStderr: "Building image extension from ~/.config/caged/config.yaml (apt: neovim, tmux)...\n",
 			wantImage:  images.ExtensionRef,
 		},
 		{
@@ -111,11 +111,20 @@ func TestRunnerRun(t *testing.T) {
 		},
 		{
 			name:       "verbose says when there is no extension",
-			exts:       fakeExts{source: "~/.config/caged/image.json"},
+			exts:       fakeExts{source: "~/.config/caged/config.yaml"},
 			store:      fakeStore{images: baseImage(currentImage(version))},
 			verbose:    true,
 			wantCalls:  []string{"load", "plan", "daemon", inspectBase, "run"},
-			wantStderr: "image: no image.apt packages in ~/.config/caged/image.json\nimage: " + images.Base(version).Describe() + "\n",
+			wantStderr: "image: no image.apt packages in ~/.config/caged/config.yaml\nimage: " + images.Base(version).Describe() + "\n",
+			wantImage:  images.BaseRef,
+		},
+		{
+			name:       "verbose leaves the line out when the config path cannot be found",
+			exts:       fakeExts{sourceErr: errors.New("find home directory: unset")},
+			store:      fakeStore{images: baseImage(currentImage(version))},
+			verbose:    true,
+			wantCalls:  []string{"load", "plan", "daemon", inspectBase, "run"},
+			wantStderr: "image: " + images.Base(version).Describe() + "\n",
 			wantImage:  images.BaseRef,
 		},
 	}
@@ -132,8 +141,8 @@ func TestRunnerRun(t *testing.T) {
 			daemon := &fakeDaemon{calls: &calls, err: tt.daemonErr}
 			request := Request{NoMount: true, NoConfig: true, Verbose: tt.verbose}
 
-			err := NewRunner(&exts, planner, daemon, NewImageEnsurer(&store, version), runner, &stderr).Run(context.Background(), request)
-			if err != tt.wantErr {
+			err := NewRunner(RunnerDeps{Extensions: &exts, Planner: planner, Daemon: daemon, Ensurer: NewImageEnsurer(&store, version), Containers: runner, Stderr: &stderr}).Run(context.Background(), request)
+			if err != tt.wantErr { //nolint:errorlint // asserts the error is returned unchanged, not wrapped
 				t.Fatalf("Run() error = %v, want %v", err, tt.wantErr)
 			}
 			if !reflect.DeepEqual(calls, tt.wantCalls) {
@@ -161,7 +170,7 @@ func TestRunnerPassesRequestAndVerboseReporterToPlanner(t *testing.T) {
 	prompt := "hello"
 	request := Request{Prompt: &prompt, Verbose: true, WorkDir: "/work"}
 	store := &fakeStore{calls: &calls, images: baseImage(currentImage("test"))}
-	runner := NewRunner(&fakeExts{calls: &calls}, planner, &fakeDaemon{calls: &calls}, NewImageEnsurer(store, "test"), &fakeRunner{calls: &calls}, &stderr)
+	runner := NewRunner(RunnerDeps{Extensions: &fakeExts{calls: &calls}, Planner: planner, Daemon: &fakeDaemon{calls: &calls}, Ensurer: NewImageEnsurer(store, "test"), Containers: &fakeRunner{calls: &calls}, Stderr: &stderr})
 	if err := runner.Run(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +178,7 @@ func TestRunnerPassesRequestAndVerboseReporterToPlanner(t *testing.T) {
 		t.Fatalf("planner request = %+v, want %+v", planner.gotReq, request)
 	}
 	stderr.Reset()
-	planner.gotRep.Detail("detail line")
+	planner.gotRep.detail("detail line")
 	if stderr.String() != "detail line\n" {
 		t.Fatalf("stderr = %q; the planner's reporter must be verbose and write to stderr", stderr.String())
 	}

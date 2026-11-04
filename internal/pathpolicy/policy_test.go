@@ -50,7 +50,7 @@ func TestNewAcceptsNarrowRoots(t *testing.T) {
 	}
 }
 
-func newCheckPolicy(t *testing.T) *Policy {
+func newCheckPolicy(t testing.TB) *Policy {
 	t.Helper()
 	policy, err := New(testConfig(
 		[]Root{{Path: "/h/dot"}},
@@ -210,11 +210,61 @@ func TestWithin(t *testing.T) {
 		{"/h/a/../b", "/h", true},
 		{"/h/../x", "/h", false},
 		{"/", "/", true},
+		{"/h/a", "/h/", true},
+		{"/hh", "/h", false},
+		{"/h/..hidden", "/h", true},
+		{"rel/a", "/h", false}, // a relative path is inside no absolute root
+		{"/h/a", "rel", false}, // and no absolute path is inside a relative root
+		{"rel/a", "", true},    // two relative names compare lexically; "" cleans to "."
 	}
 	for _, tc := range tests {
 		if got := Within(tc.path, tc.root); got != tc.want {
 			t.Errorf("Within(%q, %q) = %v, want %v", tc.path, tc.root, got, tc.want)
 		}
+	}
+}
+
+// TestRemedyNeverSuggestsADeniedRoot pins WB-T1 (bugs.md B-HC-3): a policy
+// with a deny root set aside by Without can refuse a directory that is a form
+// of that root (caged's config folder, linked into dotfiles). New rejects the
+// directory itself as an allow root, so the hint names its parent, unless the
+// parent is too broad.
+func TestRemedyNeverSuggestsADeniedRoot(t *testing.T) {
+	t.Parallel()
+	deny := []Root{{Path: "/h/.config/caged", Forms: []string{"/h/dotfiles/caged", "/h/caged"}, Builtin: true}}
+	policy, err := New(testConfig(nil, deny))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := policy.Without("/h/.config/caged")
+
+	decision := set.Check("/h/dotfiles/caged")
+	const want = `add "- path: ~/dotfiles" under links.allow in ~/.config/caged/config.yaml`
+	if got := policy.Remedy(decision, "/h/dotfiles/caged", true); got != want {
+		t.Fatalf("Remedy = %q, want %q", got, want)
+	}
+	if _, err := New(testConfig([]Root{{Path: "/h/dotfiles"}}, deny)); err != nil {
+		t.Fatalf("New rejected the suggested root: %v", err)
+	}
+	if got := policy.Remedy(decision, "/h/other/x", true); got != `add "- path: ~/other/x" under links.allow in ~/.config/caged/config.yaml` {
+		t.Errorf("Remedy for a directory outside every deny root = %q, want the directory itself", got)
+	}
+	if got := policy.Remedy(set.Check("/h/caged"), "/h/caged", true); got != `add "- path: ~/caged" under links.allow in ~/.config/caged/config.yaml` {
+		t.Errorf("Remedy with a too-broad parent = %q, want the directory itself", got)
+	}
+}
+
+// TestBuiltinDenyAddsCagedsOwnFolders pins WB-T1 (bugs.md Q-F03, Q-UC-3):
+// caged's config and approval-state folders are denied wherever the
+// environment put them, after the fixed entries, so a path the fixed list
+// already denies is still decided by the same root.
+func TestBuiltinDenyAddsCagedsOwnFolders(t *testing.T) {
+	t.Parallel()
+	fixed := BuiltinDeny("/h")
+	got := BuiltinDeny("/h", "/xdg/caged/", "/h/.config/caged", "/h/.local/state/caged", "/xdg/caged")
+	want := append(append([]string(nil), fixed...), "/xdg/caged", "/h/.local/state/caged")
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("BuiltinDeny = %q\nwant %q", got, want)
 	}
 }
 
@@ -229,5 +279,34 @@ func TestBuiltinDeny(t *testing.T) {
 		if !found {
 			t.Errorf("BuiltinDeny(/h) = %q, missing %q", paths, want)
 		}
+	}
+}
+
+func TestWithoutDropsOnlyTheNamedDenyRoots(t *testing.T) {
+	t.Parallel()
+
+	p, err := New(Config{
+		Home: "/home/me", Source: "~/.config/caged/config.yaml", Field: "links.allow",
+		Allow: []Root{{Path: "/home/me/dotfiles"}},
+		Deny:  []Root{{Path: "/home/me/.config/caged", Builtin: true}, {Path: "/home/me/.ssh", Builtin: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Check("/home/me/dotfiles/caged"); got.Verdict != Allowed {
+		t.Fatalf("setup: Check(dotfiles/caged) = %v; want Allowed", got.Verdict)
+	}
+	if got := p.Check("/home/me/.config/caged"); got.Verdict != Denied {
+		t.Fatalf("setup: Check(.config/caged) = %v; want Denied", got.Verdict)
+	}
+	trimmed := p.Without("/home/me/.config/caged")
+	if got := trimmed.Check("/home/me/.config/caged"); got.Verdict == Denied {
+		t.Errorf("Without().Check(.config/caged) = Denied; want the entry dropped")
+	}
+	if got := trimmed.Check("/home/me/.ssh/key"); got.Verdict != Denied {
+		t.Errorf("Without().Check(.ssh/key) = %v; want the other deny roots kept", got.Verdict)
+	}
+	if got := p.Check("/home/me/.config/caged"); got.Verdict != Denied {
+		t.Errorf("the original policy changed: Check(.config/caged) = %v; want Denied", got.Verdict)
 	}
 }

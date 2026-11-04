@@ -3,7 +3,7 @@ package agent
 import (
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -26,7 +26,7 @@ func TestBuiltinRegistryContract(t *testing.T) {
 
 	registry := Builtin()
 	names := registry.Names()
-	if !sort.StringsAreSorted(names) {
+	if !slices.IsSorted(names) {
 		t.Fatalf("Names() = %v, want sorted", names)
 	}
 	all := registry.All()
@@ -165,7 +165,27 @@ func TestNewAgentNeedsOnlyItsDefinition(t *testing.T) {
 	if want := []string{"test-only-agent", "--message", "add tests"}; !reflect.DeepEqual(command, want) {
 		t.Fatalf("LaunchCommand() = %q, want %q", command, want)
 	}
-	if names := registry.Names(); len(names) != len(Builtin().Names())+1 || !sort.StringsAreSorted(names) {
+	if names := registry.Names(); len(names) != len(Builtin().Names())+1 || !slices.IsSorted(names) {
 		t.Fatalf("Names() = %v, want every built-in plus the new agent, sorted", names)
+	}
+}
+
+// TestRegistrySortsNamesWhateverTheOrderGiven pins that Names, All and the
+// lookup error list the agents sorted, not in registration order.
+func TestRegistrySortsNamesWhateverTheOrderGiven(t *testing.T) {
+	t.Parallel()
+
+	registry, err := NewRegistry(Agent{Name: "mid", Command: []string{"mid"}}, Agent{Name: "zed", Command: []string{"zed"}}, Agent{Name: "abc", Command: []string{"abc"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := registry.Names(); !slices.Equal(got, []string{"abc", "mid", "zed"}) {
+		t.Errorf("Names() = %q", got)
+	}
+	if all := registry.All(); len(all) != 3 || all[0].Name != "abc" || all[1].Name != "mid" || all[2].Name != "zed" {
+		t.Errorf("All() = %+v", all)
+	}
+	if _, err := registry.Lookup("nope"); err == nil || !strings.HasSuffix(err.Error(), "supported agents: abc, mid, zed") {
+		t.Errorf("Lookup error = %v", err)
 	}
 }

@@ -4,9 +4,48 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/JeremyOrr4/caged/internal/pathpolicy"
 	"github.com/JeremyOrr4/caged/internal/plan"
+)
+
+// entryKind is what a config tree entry is, as Lstat sees it: no symlink is
+// followed.
+type entryKind int
+
+const (
+	entryUninspectable entryKind = iota // Lstat failed
+	entryDir
+	entryFile // a regular file
+	entrySymlink
+	entrySpecial // a socket, FIFO, device or anything else
+)
+
+// classifyEntry reports the kind of an entry from the result of Lstat, so a
+// caller writes classifyEntry(fsys.Lstat(path)).
+func classifyEntry(info fs.FileInfo, err error) entryKind {
+	switch {
+	case err != nil:
+		return entryUninspectable
+	case info.Mode()&fs.ModeSymlink != 0:
+		return entrySymlink
+	case info.IsDir():
+		return entryDir
+	case info.Mode().IsRegular():
+		return entryFile
+	default:
+		return entrySpecial
+	}
+}
+
+// The refusal reasons that more than one walker gives.
+const (
+	reasonUninspectableEntry = "cannot inspect config entry safely"
+	reasonUninspectableRoot  = "cannot inspect config root safely"
+	reasonSpecialFile        = "special files are excluded from config mounts"
+	reasonRootNotFileOrDir   = "config root is not a regular file or directory"
 )
 
 // validateMaskedConfigTree accepts a directory that will be mounted whole and
@@ -21,40 +60,30 @@ func validateMaskedConfigTree(fsys FileSystem, root string, masks []string) ([]s
 	if !rootInfo.IsDir() {
 		return nil, fmt.Errorf("masked config root must be a directory")
 	}
-	maskPaths := make([]string, 0, len(masks))
-	for _, mask := range masks {
-		clean := filepath.Clean(mask)
-		if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return nil, fmt.Errorf("invalid config mask path %q", mask)
-		}
-		maskPaths = append(maskPaths, filepath.Join(root, clean))
+	maskPaths, err := maskedPaths(root, masks)
+	if err != nil {
+		return nil, err
 	}
 	var outside []string
 	if err := fsys.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if path != root {
-			for _, mask := range maskPaths {
-				if path == mask || isWithin(path, mask) {
-					if entry.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-			}
-		}
-		info, err := fsys.Lstat(path)
-		if err != nil {
-			return err
-		}
-		if info.Mode()&fs.ModeSymlink != 0 {
-			if resolved, err := fsys.EvalSymlinks(path); err != nil || !isWithin(resolved, root) {
-				outside = append(outside, path)
+		if path != root && insideAny(path, maskPaths) {
+			if entry.IsDir() {
+				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !info.IsDir() && !info.Mode().IsRegular() {
+		info, err := fsys.Lstat(path)
+		switch classifyEntry(info, err) {
+		case entryUninspectable:
+			return err
+		case entrySymlink:
+			if resolved, err := fsys.EvalSymlinks(path); err != nil || !pathpolicy.Within(resolved, root) {
+				outside = append(outside, path)
+			}
+		case entrySpecial:
 			return fmt.Errorf("special file %q is not covered by a config mask", path)
 		}
 		return nil
@@ -64,100 +93,107 @@ func validateMaskedConfigTree(fsys FileSystem, root string, masks []string) ([]s
 	return outside, nil
 }
 
+// maskedPaths returns the host paths of masks, which must be relative paths
+// inside root, or an error naming the first one that is not.
+func maskedPaths(root string, masks []string) ([]string, error) {
+	paths := make([]string, 0, len(masks))
+	for _, mask := range masks {
+		clean := filepath.Clean(mask)
+		if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("invalid config mask path %q", mask)
+		}
+		paths = append(paths, filepath.Join(root, clean))
+	}
+	return paths, nil
+}
+
+// insideAny reports whether path is one of roots or inside one of them.
+func insideAny(path string, roots []string) bool {
+	return slices.ContainsFunc(roots, func(root string) bool { return pathpolicy.Within(path, root) })
+}
+
 // collectSafeMounts returns the largest subtrees of root that contain only
 // regular files and directories, plus the symlinks it found and a reason for
 // every other entry it skipped.
 func collectSafeMounts(fsys FileSystem, root string) (mounts, links []string, refused []plan.Refusal) {
-	var collect func(string)
-	collect = func(path string) {
-		entries, err := fsys.ReadDir(path)
-		if err != nil {
-			info, statErr := fsys.Lstat(path)
-			if statErr == nil && info.Mode().IsRegular() {
-				mounts = append(mounts, path)
-			} else {
-				refused = append(refused, plan.Refusal{Path: path, Reason: "cannot inspect config entry safely"})
-			}
-			return
-		}
-		if subtreeIsSafe(fsys, path) {
-			mounts = append(mounts, path)
-			return
-		}
-		for _, entry := range entries {
-			child := filepath.Join(path, entry.Name())
-			info, err := fsys.Lstat(child)
-			if err != nil {
-				refused = append(refused, plan.Refusal{Path: child, Reason: "cannot inspect config entry safely"})
-				continue
-			}
-			if info.IsDir() {
-				collect(child)
-			} else if info.Mode().IsRegular() {
-				mounts = append(mounts, child)
-			} else if info.Mode()&fs.ModeSymlink != 0 {
-				links = append(links, child)
-			} else {
-				refused = append(refused, plan.Refusal{Path: child, Reason: "special files are excluded from config mounts"})
-			}
-		}
-	}
-	info, err := fsys.Lstat(root)
-	if err != nil {
-		return nil, nil, []plan.Refusal{{Path: root, Reason: "cannot inspect config root safely"}}
-	}
-	if info.Mode().IsRegular() {
+	switch classifyEntry(fsys.Lstat(root)) {
+	case entryUninspectable:
+		return nil, nil, []plan.Refusal{{Path: root, Reason: reasonUninspectableRoot}}
+	case entryFile:
 		return []string{root}, nil, nil
+	case entryDir:
+		scan := &treeScan{fs: fsys}
+		scan.scan(root)
+		return scan.mounts, scan.links, scan.refused
+	default:
+		return nil, nil, []plan.Refusal{{Path: root, Reason: reasonRootNotFileOrDir}}
 	}
-	if !info.IsDir() {
-		return nil, nil, []plan.Refusal{{Path: root, Reason: "config root is not a regular file or directory"}}
-	}
-	collect(root)
-	return mounts, links, refused
 }
 
-// subtreeIsSafe reports whether root contains only regular files and directories.
-func subtreeIsSafe(fsys FileSystem, root string) bool {
-	entries, err := fsys.ReadDir(root)
+// treeScan collects the mounts, links and refusals of one split tree in a
+// single pass: each entry is inspected once (a directory that cannot be read,
+// twice), however deep the tree.
+type treeScan struct {
+	fs      FileSystem
+	mounts  []string
+	links   []string
+	refused []plan.Refusal
+}
+
+// scan records dir and reports whether it holds only regular files and
+// directories. Such a dir is mounted whole, in place of everything below it;
+// any other dir is recorded through its entries.
+func (s *treeScan) scan(dir string) bool {
+	entries, err := s.fs.ReadDir(dir)
 	if err != nil {
+		if classifyEntry(s.fs.Lstat(dir)) == entryFile {
+			s.mounts = append(s.mounts, dir)
+		} else {
+			s.refuse(dir, reasonUninspectableEntry)
+		}
 		return false
 	}
+	below := len(s.mounts)
+	safe := true
 	for _, entry := range entries {
-		path := filepath.Join(root, entry.Name())
-		info, err := fsys.Lstat(path)
-		if err != nil {
-			return false
-		}
-		if info.Mode()&fs.ModeSymlink != 0 {
-			return false
-		}
-		if info.IsDir() {
-			if !subtreeIsSafe(fsys, path) {
-				return false
-			}
-		} else if !info.Mode().IsRegular() {
-			return false
+		if !s.entry(filepath.Join(dir, entry.Name())) {
+			safe = false // keep going: every entry of an unsafe dir is recorded
 		}
 	}
-	return true
+	if safe {
+		// Only mounts grow below a safe dir: a link or refusal makes it unsafe.
+		s.mounts = append(s.mounts[:below], dir)
+	}
+	return safe
 }
 
+// entry records one entry of a directory and reports whether it is safe to
+// mount as part of that directory.
+func (s *treeScan) entry(path string) bool {
+	switch classifyEntry(s.fs.Lstat(path)) {
+	case entryDir:
+		return s.scan(path)
+	case entryFile:
+		s.mounts = append(s.mounts, path)
+		return true
+	case entrySymlink:
+		s.links = append(s.links, path)
+	case entrySpecial:
+		s.refuse(path, reasonSpecialFile)
+	default: // entryUninspectable, and fail safe for any kind added later
+		s.refuse(path, reasonUninspectableEntry)
+	}
+	return false
+}
+
+func (s *treeScan) refuse(path, reason string) {
+	s.refused = append(s.refused, plan.Refusal{Path: path, Reason: reason})
+}
+
+// appendUnique appends value to values unless values already holds it.
 func appendUnique[T comparable](values []T, value T) []T {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
+	if slices.Contains(values, value) {
+		return values
 	}
 	return append(values, value)
-}
-
-// isWithin reports whether path is root itself or inside it.
-func isWithin(path, root string) bool {
-	path = filepath.Clean(path)
-	root = filepath.Clean(root)
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }

@@ -45,17 +45,17 @@ func TestCleanerClean(t *testing.T) {
 				"caged-runtime": {runtime, ext, older},
 			},
 			want: []CleanResult{
-				{Ref: "caged-runtime:ext", ID: "sha256:ext", Size: "412MB", Outcome: Removed},
-				{Ref: "caged-runtime:latest", ID: "sha256:runtime", Size: "3.1GB", Outcome: Removed},
-				{Ref: "<untagged> sha256:1a2b3c4d5e6f", ID: "sha256:1a2b3c4d5e6f7890", Size: "3.0GB", Outcome: Removed},
-				{Ref: "caged-runtime:old", ID: "sha256:older", Size: "2.9GB", Outcome: Removed},
+				{Ref: "caged-runtime:ext", Size: "412MB", Outcome: Removed},
+				{Ref: "caged-runtime:latest", Size: "3.1GB", Outcome: Removed},
+				{Ref: "<untagged> sha256:1a2b3c4d5e6f", Size: "3.0GB", Outcome: Removed},
+				{Ref: "caged-runtime:old", Size: "2.9GB", Outcome: Removed},
 			},
 			wantCalls: []string{"daemon", listExt, listRuntime, listOlder, "remove caged-runtime:ext", "remove caged-runtime:latest", "remove sha256:1a2b3c4d5e6f7890", "remove caged-runtime:old"},
 		},
 		{
 			name:      "an image found by two queries is removed once",
 			by:        map[string][]engine.ImageSummary{"io.github.jeremyorr4.caged.role=runtime": {runtime}, "caged-runtime": {runtime}},
-			want:      []CleanResult{{Ref: "caged-runtime:latest", ID: "sha256:runtime", Size: "3.1GB", Outcome: Removed}},
+			want:      []CleanResult{{Ref: "caged-runtime:latest", Size: "3.1GB", Outcome: Removed}},
 			wantCalls: []string{"daemon", listExt, listRuntime, listOlder, "remove caged-runtime:latest"},
 		},
 		{
@@ -65,10 +65,24 @@ func TestCleanerClean(t *testing.T) {
 				"caged-runtime": {runtime, {ID: "sha256:runtime", Repository: "caged-runtime", Tag: "keep", Size: "3.1GB"}},
 			},
 			want: []CleanResult{
-				{Ref: "caged-runtime:latest", ID: "sha256:runtime", Size: "3.1GB", Outcome: Removed},
-				{Ref: "caged-runtime:keep", ID: "sha256:runtime", Size: "3.1GB", Outcome: Removed},
+				{Ref: "caged-runtime:latest", Size: "3.1GB", Outcome: Removed},
+				{Ref: "caged-runtime:keep", Size: "3.1GB", Outcome: Removed},
 			},
 			wantCalls: []string{"daemon", listExt, listRuntime, listOlder, "remove caged-runtime:latest", "remove caged-runtime:keep"},
+		},
+		{
+			name: "a repository without a tag is named without one, and an image without a repository by its short ID; both are removed by ID",
+			by: map[string][]engine.ImageSummary{"caged-runtime": {
+				{ID: "sha256:aaaaaaaaaaaa1111", Repository: "caged-runtime", Tag: "<none>", Size: "1GB"},
+				{ID: "sha256:bbbbbbbbbbbb2222", Repository: "caged-runtime", Size: "2GB"},
+				{ID: "sha256:cccccccccccc3333", Tag: "latest", Size: "3GB"},
+			}},
+			want: []CleanResult{
+				{Ref: "caged-runtime", Size: "1GB", Outcome: Removed},
+				{Ref: "caged-runtime", Size: "2GB", Outcome: Removed},
+				{Ref: "<untagged> sha256:cccccccccccc", Size: "3GB", Outcome: Removed},
+			},
+			wantCalls: []string{"daemon", listExt, listRuntime, listOlder, "remove sha256:aaaaaaaaaaaa1111", "remove sha256:bbbbbbbbbbbb2222", "remove sha256:cccccccccccc3333"},
 		},
 		{
 			name:      "nothing to clean",
@@ -79,7 +93,7 @@ func TestCleanerClean(t *testing.T) {
 			name:      "dry run removes nothing",
 			by:        map[string][]engine.ImageSummary{"io.github.jeremyorr4.caged.role=extension": {ext}, "caged-runtime": {older}},
 			dryRun:    true,
-			want:      []CleanResult{{Ref: "caged-runtime:ext", ID: "sha256:ext", Size: "412MB", Outcome: WouldRemove}, {Ref: "caged-runtime:old", ID: "sha256:older", Size: "2.9GB", Outcome: WouldRemove}},
+			want:      []CleanResult{{Ref: "caged-runtime:ext", Size: "412MB", Outcome: WouldRemove}, {Ref: "caged-runtime:old", Size: "2.9GB", Outcome: WouldRemove}},
 			wantCalls: []string{"daemon", listExt, listRuntime, listOlder},
 		},
 		{
@@ -87,8 +101,8 @@ func TestCleanerClean(t *testing.T) {
 			by:        map[string][]engine.ImageSummary{"io.github.jeremyorr4.caged.role=extension": {ext}, "io.github.jeremyorr4.caged.role=runtime": {runtime}},
 			removeErr: inUse,
 			want: []CleanResult{
-				{Ref: "caged-runtime:ext", ID: "sha256:ext", Size: "412MB", Outcome: Kept, Reason: "in use by a container (remove it with docker rm first)"},
-				{Ref: "caged-runtime:latest", ID: "sha256:runtime", Size: "3.1GB", Outcome: Kept, Reason: "in use by a container (remove it with docker rm first)"},
+				{Ref: "caged-runtime:ext", Size: "412MB", Outcome: Kept, Reason: "in use by a container (remove it with docker rm first)"},
+				{Ref: "caged-runtime:latest", Size: "3.1GB", Outcome: Kept, Reason: "in use by a container (remove it with docker rm first)"},
 			},
 			wantCalls: []string{"daemon", listExt, listRuntime, listOlder, "remove caged-runtime:ext", "remove caged-runtime:latest"},
 		},
@@ -96,7 +110,7 @@ func TestCleanerClean(t *testing.T) {
 			name:      "an image that vanished before its removal counts as removed",
 			by:        map[string][]engine.ImageSummary{"io.github.jeremyorr4.caged.role=extension": {ext}},
 			removeErr: &engine.Error{Kind: engine.KindImageNotFound, Message: "No such image"},
-			want:      []CleanResult{{Ref: "caged-runtime:ext", ID: "sha256:ext", Size: "412MB", Outcome: Removed}},
+			want:      []CleanResult{{Ref: "caged-runtime:ext", Size: "412MB", Outcome: Removed}},
 			wantCalls: []string{"daemon", listExt, listRuntime, listOlder, "remove caged-runtime:ext"},
 		},
 		{

@@ -50,6 +50,8 @@ $ROOT/home/.config/gh:/home/caged/.config/gh
 $ROOT/home/.pi:/home/caged/.pi
 -v
 $ROOT/home/.gitconfig:/home/caged/.gitconfig:ro
+-v
+$ROOT/home/.config/caged:/home/caged/.config/caged
 -e
 CAGED_RETURN_TO_SHELL=1
 caged-runtime:latest

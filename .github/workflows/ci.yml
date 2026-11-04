@@ -79,10 +79,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Test release scripts
+      - name: Test release and PR policy scripts
         run: make test-release-scripts
 
-  # ci-ok is the one required status check. It fails unless every quality job
+  # ci-ok is the one required status check. It fails unless every job
   # succeeded: a skipped or cancelled job counts as a failure.
   ci-ok:
     if: always()

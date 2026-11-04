@@ -18,7 +18,7 @@ func newCleanCmd(service CleanService) *cobra.Command {
 			"cache (docker builder prune clears that).",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			results, err := service.Clean(cmd.Context(), opts)
 			out := cmd.OutOrStdout()
 			if err == nil && len(results) == 0 {
@@ -26,7 +26,7 @@ func newCleanCmd(service CleanService) *cobra.Command {
 				return err
 			}
 			for _, result := range results {
-				if _, writeErr := fmt.Fprintln(out, cleanLine(result)); writeErr != nil {
+				if _, writeErr := fmt.Fprintln(out, app.PrintableLine(cleanLine(result))); writeErr != nil { // docker's reasons and refs are not ours
 					return writeErr
 				}
 			}

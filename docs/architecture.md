@@ -6,35 +6,185 @@
 caged codex 'fix tests'
    |
  [1 parse]    internal/cli      argv + flags -> app.Request (agent looked up, env names validated,
-   |                            -p values kept as strings in Request.Ports)
+   |                            -p values kept as strings in Request.Ports); the doctor, list,
+   |                            build and clean lines it prints go through app.PrintableLine
+   |                            (control characters, newlines and tabs escaped)
    |
  [2 plan]     internal/app      Runner.Run first loads the image extension (a bad config.yaml fails here),
    |                            then Planner.Plan: ports (plan.ParsePorts, first) + project mount +
-   |                            config mounts + env names
+   |                            config mounts (agent configs, .gitconfig, and caged's own config folder) + env names
    |                            -> plan.RunSpec (pure data, no Docker knowledge);
-   |                            warnings and --verbose lines go through app.Reporter.
+   |                            warnings and --verbose lines go through app.Reporter
+   |                            (control characters escaped, as in ConfigGuard's review).
    |                            A bad request fails here, before any docker call
    |
  [3 prepare]  internal/app      Runner.Run: Daemon check (docker installed? daemon up?), then
-   |                            ImageEnsurer.Ensure: build or rebuild the runtime image when it is
+   |                            ImageEnsurer.ensureImages: build or rebuild the runtime image when it is
    |                            missing or out of date, and remove the image it replaced
    |
- [4 execute]  internal/docker   Client.RunContainer: RunSpec -> `docker run -it --rm ...`
+ [4 execute]  internal/docker   Client.RunContainer: RunSpec -> `docker run -it --rm ...`;
+                                staged (Pi) config runs from configstage.Stager.Stage copies:
+                                once the container exits, Session.Sync writes its changes back
+                                and Session.Cleanup removes the copies; after SIGINT, SIGHUP or
+                                SIGTERM (system.Command.CatchSignals), or when a signal ended the
+                                docker CLI itself, only Cleanup runs, and *system.SignalError or
+                                *system.KilledError carries exit code 128+signal
 ```
 
 Every stage talks to the next one through a small interface or a plain data
 type, so each stage can be unit-tested with fakes and none of them needs a
 Docker daemon. Only `internal/system` touches the operating system.
 
+## Life of `caged codex 'fix tests'`
+
+Each step names the function that does it, so the walk can be followed in the
+code from `cmd/caged/main.go` to `docker run`.
+
+1. **Process inputs.** `main` collects the real stdio and platform
+   (`system.CurrentStdio`, `system.CurrentPlatform`), the version
+   (`resolveVersion`) and the agents (`agent.Builtin`), and calls `run`.
+2. **Wiring.** `run` builds every component once: `userconfig.NewStore`,
+   `app.NewConfigGuard`, `hostconfig.NewResolver`, `project.NewResolver`,
+   `app.NewPlanner`, `docker.NewClient` (with `configstage.New` as its stager),
+   `app.NewImageEnsurer`, and the use cases behind `cli.Services`. It then
+   executes `cli.NewRootCmd` with the arguments `codex` and `fix tests`.
+3. **Parsing.** Cobra checks the positional arguments with `cli.positionalArgs`
+   (at most an agent and a prompt before `--`). The root command's `RunE` calls
+   `splitArgs` (before and after `--`), then `buildRequest`, which looks up
+   `codex` in the registry and returns an `app.Request` with the agent, the
+   prompt `fix tests` and the flags.
+4. **Config review.** `RunE` calls `cli.Services.Run`, which is
+   `app.GuardedRunner.Run`. `ConfigGuard.prepare` creates the starter
+   `config.yaml` when there is none (`Store.Ensure`), reads the exact bytes
+   (`Store.Content`), compares them with the approved copy
+   (`Approvals.Approved`), and on a change shows the diff and asks; the first
+   copy, or an approved change, is recorded with `Approvals.Approve`.
+5. **Image choice.** `app.Runner.Run` loads `image.apt` (`Store.Load`, through
+   `Extensions`); `images.RefFor` names the image to run: `caged-runtime:latest`,
+   or `caged-runtime:ext` when there are packages.
+6. **Planning (pure, no Docker).** `Planner.Plan` parses `-p` with
+   `plan.ParsePorts`, prints the credentials warning, and asks two resolvers:
+   - `Planner.projectMount` -> `project.Resolver.Resolve(workDir, home,
+     allowBroadMount)`: the current directory becomes `/workspace/<folder>`,
+     after the `/`, home and `workdirs.allow` checks.
+   - `Planner.configMounts` -> `hostconfig.Resolver.Resolve(home)`: for every
+     agent's `ConfigPath`, `resolution.agentPath` resolves and checks the root
+     (`resolveRoot`, `checkRoot`). Codex's `~/.codex` has `MaskPaths`, so it is
+     checked by `validateMaskedConfigTree`, mounted whole with tmpfs masks
+     (`addMount`), and each link out of it is followed by `followMaskedLink`.
+     Other trees go through `mountTree` (split trees, `followLink`), and Pi's
+     through `mountStagedTree`. Then `sharedFile` adds `~/.gitconfig`
+     read-only, `cagedDir` adds caged's own config folder, and
+     `dropNestedLinkMounts` refuses link mounts inside other mounts (staged
+     mounts are left to configstage, which nests them inside its copy).
+   `Agent.ResolveEnv` keeps the credential names that are set, and
+   `buildRunSpec` calls `Agent.LaunchCommand`, which gives
+   `codex exec 'fix tests'` (Codex's prompt style). The result is a
+   `plan.RunSpec`.
+7. **Docker ready.** `Runner.Run` checks the daemon (`docker.Client.Daemon`,
+   `docker info`), then `ImageEnsurer.ensureImages` -> `refresh` ->
+   `ensureTarget` for each image (`InspectImage`, `images.Target.Assess`, and
+   a build when it is missing or stale, `BuildImage`); then `refresh` calls
+   `ImageEnsurer.cleanup`, which removes the images the builds replaced
+   (`RemoveImage`, the extension's first).
+8. **Run.** `docker.Client.RunContainer` stages the config mounts that need
+   it (`configstage.Stager.Stage`; with a Pi config that has masks or nested
+   mounts, see "Pi staging" below), creates the empty file bound over file
+   masks (`createMaskFile`; only an unstaged mount can still have file masks,
+   so a normal run creates none), and `Client.run` executes `docker run -it --rm ...`
+   built by `runArgs` through `system.Executor.Run` with `CatchSignals`. A
+   failure is explained by `classifyRunError` (port in use, path not shared).
+9. **After the container.** `finish` writes the staged copies back
+   (`Session.Sync`) and removes them (`Session.Cleanup`); after a signal it
+   only removes them. Back in `run`, an error is printed with
+   `Reporter.Notice`, and the exit code is the error's `ExitCode()` (the
+   container's own code, or 128+signal), else 1.
+
+## Pi staging
+
+Pi's config folders (`~/.pi`, `~/.config/pi`) are `Staged`. Stow-managed
+folders hold symlinks, and their targets have to be mounted inside the
+folder's own mount. Docker resolves a nested mount destination through any
+symlink inside the parent bind mount, so mounting those targets, or masks,
+directly into the real folder could escape it. A staged tree that needs masks
+or nested mounts therefore runs from a symlink-free copy; one that needs
+neither is mounted as it is. `hostconfig` describes the staged mount
+(`mountStagedTree`: its directory and file masks and its nested link mounts);
+`configstage` makes and writes back the copy:
+
+- `Stager.Stage` copies each staged tree that has masks or nested mounts
+  into one temporary directory (`caged-pi-config-*`) and returns a `Session`;
+  `Session.Mounts` points those mounts at the copies, and passes the other
+  mounts through unchanged. When nothing needs a copy, the session is
+  `Unstaged`: Sync and Cleanup do nothing.
+- `Session.Sync`, after the container stops, writes back what the container
+  changed against the baseline taken before it started: new and modified
+  files, permission changes, and deletions, also inside subdirectories (a
+  file deleted in `sub/` is removed there; a same-named top-level file stays).
+- When the host changed the same entry differently during the run, the host
+  version is kept and the conflict is reported ("both changed"). A host
+  entry added during the run is kept. A host symlink is never replaced, and
+  a symlink or special file the container created is never written back.
+- `Session.Cleanup` removes the copies after a run, and also when staging or
+  the mask file fails before the run. After a signal, Sync is skipped and
+  the error says the changes were not written back.
+- Each staged tree's masks are recorded on its own mount
+  (`TestResolveStagedTreeTwiceKeepsMaskFilesOnTheRoot`), so the right copy
+  leaves them out; a copied mount needs no file mask at run time.
+
+Sync can be called again (it advances each copy's baseline), which is the
+seam a future long-lived session would use.
+
 Existing agent configs mount read-write so settings and login changes persist.
-The shared `.gitconfig` mount is read-only. Missing config paths are skipped;
-trees containing special files are refused. `--no-config` disables these mounts.
+The shared `.gitconfig` mount is read-only. Missing config paths are skipped.
+Special files (sockets, FIFOs, devices) are never mounted: a split tree leaves
+them out and refuses only them, a staged (Pi) tree masks them, and a Codex home
+with one outside its masks is refused whole. `--no-config` disables these mounts.
+
+Caged's own config folder (`userconfig.Store.Dir`) is mounted read-write at
+`/home/caged/.config/caged` by `hostconfig.Resolver` (field `Deps.ConfigDirs`), so
+it is part of the same `ConfigReport` as the agent mounts. It may live outside
+the home directory (absolute `XDG_CONFIG_HOME`). When it is reached through a
+symlink it is judged by `links.allow` like any link target, using
+`pathpolicy.Policy.Without` to set aside only its own built-in deny entries
+(`~/.config/caged` and the real folder) for that one tree (each mount owner
+carries the policy that judges its links); links from agent config into it are
+still refused. Linked or not, it is refused when it is the home directory,
+touches another deny root, or is, holds or sits inside the approval state
+folder (`ConfigDirs.StateDir`), which setting its own entries aside would
+otherwise mount. `userconfig.Store.LinkPolicy` passes the real config
+folder and the approval state folder to `pathpolicy.BuiltinDeny`, so both are
+denied wherever the XDG variables put them. A deny entry that does not exist
+yet also gets its deepest existing parent resolved (`Store.denyRoot`), so a
+symlinked home or a Stow-linked `~/.local` does not hide it.
+
+### First use and change review
+
+The config file is created and reviewed by `app.ConfigGuard`, applied as a
+decorator around each use case (`GuardedRunner`, `GuardedBuilder`,
+`GuardedDoctor`, `GuardedLister`) in `cmd/caged`, so the use cases themselves
+stay unchanged and `help`, `--version` and `clean` never reach it.
+`ConfigGuard.prepare` does three things: `Store.Ensure` creates the folder and starter file
+(skipped with `--no-config`; exclusive create through `system.FS.CreateFile`, a
+temp file hard-linked into place so the file appears complete or not at all);
+`Store.Content` returns the exact bytes the store parsed, so what the user
+reviews is what caged acts on; and `ConfigGuard` compares them with the last
+approved copy, which `userconfig.Approvals` keeps in `$XDG_STATE_HOME/caged`,
+outside any mount. The diff
+is computed by `internal/textdiff` (pure). Under `prepare` (run, build) a change
+needs a `y` at a terminal or `--trust-config`; `doctor` and `list` call
+`notify`, which only reports it and never stops the command. Every command
+that reviews the file records the first copy it sees without asking; when that
+record fails, `notify` warns and goes on, while `prepare` stops.
 
 Symlinks in agent config (Stow-managed dotfiles, for example) are followed on
 the host, never by Docker. Each target is resolved and checked by
 `pathpolicy` against the user's `links.allow` roots and the built-in deny list
 (`pathpolicy.BuiltinDeny`); a target inside the link's own config folder needs
-no policy. Where a mount goes depends on how the config is mounted:
+no policy. A config root that is not a symlink must be inside home and must
+not be inside or hold a built-in deny root (an override such as
+`CLAUDE_CONFIG_DIR=~/.ssh`); `links.deny` judges links only. Where a mount goes
+depends on how the config is mounted:
 
 - **Split trees.** A directory that holds symlinks is not mounted whole. Its
   symlink-free subtrees are mounted directly, and each symlink's target is
@@ -63,27 +213,32 @@ container (a time-of-check to time-of-use gap).
 ```text
 cmd/caged/            composition root: the only place that picks concrete types
 internal/cli/         Cobra commands (one file each) and flags -> app requests; nothing else
-internal/app/         use cases: Runner (run) and Builder (build), and Planner (Request -> RunSpec; runspec.go assembles the RunSpec)
+internal/app/         use cases: Runner (run), Builder (build), Doctor, Lister, Cleaner; ConfigGuard and its Guarded* decorators (config review);
+                      Planner (Request -> RunSpec; runspec.go assembles it); ImageEnsurer (images current); Reporter (stderr lines)
 internal/plan/        specs that flow down: RunSpec, Mount, ConfigMount, ConfigReport, BuildSpec
 internal/userconfig/  locate, read, and validate the user's config.yaml -> plan.Extension, plan.ConfigStatus, and the link and workdir policies
 internal/pathpolicy/  allow and deny lists for host paths (no IO) -> pathpolicy.Policy
+internal/textdiff/    unified line diff of two texts (no IO), used to show config changes
 internal/engine/      facts and errors that flow up: Kind, Error, DaemonInfo, ImageInfo
 internal/agent/       Agent definition, Registry, one file per built-in agent
 internal/project/     project directory validation -> plan.Mount
 internal/hostconfig/  host config discovery and safety policy -> plan.ConfigReport
+internal/configstage/ runs staged config mounts (Pi) from symlink-free copies, writes changes back
 internal/docker/      Docker CLI adapter: RunSpec/BuildSpec -> docker commands
 internal/images/      the runtime image: tag + embedded Dockerfile and entrypoint
 internal/system/      thin OS adapters: FS, Env, Executor, Platform, Stdio
+internal/testkit/     test fakes shared by several packages (Env); imported only by _test.go files
 ```
 
 ## Dependency direction
 
 | Package | May import (caged packages) |
 |---|---|
-| `cmd/caged` | `agent`, `app`, `cli`, `docker`, `hostconfig`, `project`, `system`, `userconfig` |
+| `cmd/caged` | `agent`, `app`, `cli`, `configstage`, `docker`, `hostconfig`, `project`, `system`, `userconfig` |
 | `internal/cli` | `agent`, `app` |
-| `internal/app` | `agent`, `engine`, `images`, `plan` |
-| `internal/docker` | `engine`, `plan`, `system` |
+| `internal/app` | `agent`, `engine`, `images`, `pathpolicy`, `plan`, `textdiff` |
+| `internal/configstage` | `plan` |
+| `internal/docker` | `configstage`, `engine`, `plan`, `system` |
 | `internal/engine` | nothing |
 | `internal/hostconfig` | `agent`, `pathpolicy`, `plan` |
 | `internal/pathpolicy` | nothing |
@@ -93,6 +248,8 @@ internal/system/      thin OS adapters: FS, Env, Executor, Platform, Stdio
 | `internal/plan` | nothing |
 | `internal/agent` | nothing |
 | `internal/system` | nothing |
+| `internal/textdiff` | nothing |
+| `internal/testkit` | nothing (and only `_test.go` files may import it) |
 
 Dependencies point from policy to the things policy needs. `app` (the use
 cases) imports no adapter package: it does not know about Docker, the
@@ -106,6 +263,11 @@ standard `runtime` package. It fails if any package other than
 `WalkDir`. It also fails on any package-level `var`, except `main.version`
 (set by `-ldflags`) and the `//go:embed` files.
 
+`internal/testkit` holds the `Env` fake shared by the app, userconfig and
+hostconfig tests. Only `_test.go` files import it: no row above lists it, so a
+production import fails (`TestTestkitIsOnlyForTests`). Test imports are
+otherwise not checked.
+
 ## Key interfaces
 
 Interfaces are declared by the package that consumes them and contain only
@@ -114,33 +276,40 @@ the right.
 
 | Consumer | Interface | Methods | Implemented by |
 |---|---|---|---|
-| `cli` | `RunService` | `Run(ctx, app.Request) error` | `*app.Runner` |
-| `cli` | `BuildService` | `Build(ctx, app.BuildOptions) ([]app.BuiltImage, error)` | `*app.Builder` |
-| `cli` | `DoctorService` | `Diagnose(ctx, app.DoctorOptions) app.DoctorReport` | `*app.Doctor` |
-| `cli` | `ListService` | `List() ([]app.AgentStatus, error)` | `*app.Lister` |
+| `cli` | `RunService` | `Run(ctx, app.Request) error` | `app.GuardedRunner` (wraps `*app.Runner`) |
+| `cli` | `BuildService` | `Build(ctx, app.BuildOptions) ([]app.BuiltImage, error)` | `app.GuardedBuilder` (wraps `*app.Builder`) |
+| `cli` | `DoctorService` | `Diagnose(ctx, app.DoctorOptions) app.DoctorReport` | `app.GuardedDoctor` (wraps `*app.Doctor`) |
+| `cli` | `ListService` | `List() ([]app.AgentStatus, error)` | `app.GuardedLister` (wraps `*app.Lister`) |
 | `cli` | `CleanService` | `Clean(ctx, app.CleanOptions) ([]app.CleanResult, error)` | `*app.Cleaner` |
-| `cli` | `Agents` | `Lookup(name) (agent.Agent, error)`, `Names() []string` | `*agent.Registry` |
 | `app` | `Extensions` | `Load() (*plan.Extension, error)`, `Source() (string, error)` | `*userconfig.Store` |
 | `app` | `ConfigFile` | `Status() (plan.ConfigStatus, error)` | `*userconfig.Store` |
 | `app` | `ImageInspector` | `InspectImage(ctx, ref) (engine.ImageInfo, error)` | `*docker.Client` |
 | `app` | `ImageLister` | `ListImages(ctx, engine.ImageQuery) ([]engine.ImageSummary, error)` | `*docker.Client` |
 | `app` | `Prober` | `ReadImageFile(ctx, ref, path) ([]byte, error)`, `ProbeMount(ctx, ref, plan.Mount) error` | `*docker.Client` |
 | `app` | `Daemon` | `Daemon(ctx) (engine.DaemonInfo, error)` | `*docker.Client` |
-| `app` | `ImageStore` | `InspectImage(ctx, ref) (engine.ImageInfo, error)`, `BuildImage(ctx, plan.BuildSpec) (id string, err error)`, `RemoveImage(ctx, id) error` | `*docker.Client` |
+| `app` | `ImageStore` | `InspectImage(ctx, ref) (engine.ImageInfo, error)`, `BuildImage(ctx, plan.BuildSpec) (id string, err error)`, `RemoveImage(ctx, idOrRef) error` | `*docker.Client` |
 | `app` | `ContainerRunner` | `RunContainer(ctx, plan.RunSpec) error` | `*docker.Client` |
 | `app` | `RunPlanner` | `Plan(Request, imageRef string, *Reporter) (plan.RunSpec, error)` | `*app.Planner` |
 | `app` | `Env` | `LookupEnv(key) (string, bool)`, `UserHomeDir() (string, error)`, `Getwd() (string, error)` | `system.Env` |
 | `app` | `ProjectResolver` | `Resolve(workDir, home string, allowBroadMount bool) (*plan.Mount, error)` | `*project.Resolver` |
 | `app` | `ConfigResolver` | `Resolve(home string) (plan.ConfigReport, error)` | `*hostconfig.Resolver` |
-| `userconfig` | `FileSystem` | `ReadFile`, `Stat`, `EvalSymlinks` | `system.FS` |
+| `app` | `ConfigInitializer` | `Ensure() (created bool, err error)` | `*userconfig.Store` |
+| `app` | `ConfigContent` | `Content() ([]byte, bool, error)`, `Source() (string, error)` | `*userconfig.Store` |
+| `app` | `ConfigApprovals` | `Approved() ([]byte, bool, error)`, `Approve([]byte) error` | `*userconfig.Approvals` |
+| `userconfig` | `FileSystem` | `ReadRegularFile`, `Stat`, `EvalSymlinks`, `MkdirAllPrivate`, `CreateFile` | `system.FS` |
+| `userconfig` | `StateFS` | `ReadFile`, `MkdirAllPrivate`, `ReplaceFile` | `system.FS` |
+| `userconfig` | `ConfigPath` | `Path() (string, error)` | `*userconfig.Store` |
 | `userconfig` | `Env` | `LookupEnv(key) (string, bool)`, `UserHomeDir() (string, error)` | `system.Env` |
 | `hostconfig` | `FileSystem` | `Stat`, `Lstat`, `ReadDir`, `EvalSymlinks`, `WalkDir`, `Readlink` | `system.FS` |
+| `hostconfig` | `ConfigDirs` | `Dir() (string, error)`, `StateDir() (string, error)` | `*userconfig.Store` |
 | `hostconfig` | `LinkPolicies` | `LinkPolicy(home string) (*pathpolicy.Policy, error)` | `*userconfig.Store` |
 | `project` | `WorkdirPolicies` | `WorkdirPolicy(home string) (*pathpolicy.Policy, error)` | `*userconfig.Store` |
 | `hostconfig` | `Env` | `LookupEnv(key) (string, bool)` | `system.Env` |
 | `project` | `FileSystem` | `Abs`, `Stat`, `EvalSymlinks` | `system.FS` |
 | `docker` | `Executor` | `LookPath(file) (string, error)`, `Run(ctx, system.Command) error` | `system.Executor` |
 | `docker` | `FileSystem` | `MkdirTemp`, `WriteFile`, `ReadFile`, `RemoveAll` | `system.FS` |
+| `docker` | `ConfigStager` | `Stage([]plan.ConfigMount) (*configstage.Session, error)` | `*configstage.Stager` |
+| `configstage` | `FileSystem` | `Lstat`, `ReadDir`, `WalkDir`, `ReadFile`, `WriteFile`, `ReplaceFile`, `Mkdir`, `MkdirAll`, `MkdirTemp`, `Chmod`, `Remove`, `RemoveAll` | `system.FS` |
 
 Failures from the container engine are `*engine.Error` values with a `Kind`
 (not installed, daemon down, unsupported host, image not found, and so on).
@@ -169,8 +338,10 @@ on any machine. Cobra keeps its default output writers on purpose: calling
 ## Platform-specific behaviour
 
 The host platform (`system.Platform{OS, Arch, UID, GID}`) is a value that is
-injected into `docker.Client`. Nothing reads `runtime.GOOS` directly.
-`internal/docker/platform.go` holds all of the OS-specific policy:
+injected into `docker.Client` and, as `app.Host`, into the doctor. Nothing
+reads `runtime.GOOS` except `system.CurrentPlatform`, which builds that value. `internal/docker/platform.go` holds the
+OS-specific rules for docker, and `internal/app/doctor_checks.go` the doctor's
+(the Docker Desktop, Rosetta and file-sharing messages):
 
 - Linux runs the container as the host UID:GID (`--user`). macOS keeps the
   image user, because Docker Desktop translates bind-mount ownership.
@@ -183,9 +354,18 @@ injected into `docker.Client`. Nothing reads `runtime.GOOS` directly.
 - `caged doctor` warns when caged's own architecture differs from the daemon's (an amd64
   caged on Apple silicon runs under Rosetta), and when the engine is older than the
   documented minimum.
+- macOS's file systems ignore case in names by default, so `~/.SSH` is `~/.ssh`.
+  `system.Platform.FoldsCase` sets `hostconfig.Deps.FoldCase`, and the resolver then
+  uses `pathpolicy.Policy.FoldCase`: deny roots, the home directory and the overlap of
+  caged's config and approval-state folders (`Policy.Overlap`) match in any case.
+  Allow roots still match exactly, so a name in other letters can only be refused.
+  The folding is `strings.ToLower`: Unicode normalization (NFC against NFD) is not
+  folded.
 
 Both branches are unit-tested by injecting `OS: "linux"` or `OS: "darwin"`.
-The golden tests run every command line for both platforms. Paths are always
+The golden tests run every command line for both platforms. The end-to-end
+suite in `dev/e2e` runs on Linux and on macOS (`make e2e-macos`, with a
+macOS-only section M); `dev/e2e/README.md` describes it. Paths are always
 built with `path/filepath` on the host side and with forward slashes on the
 container side. macOS `/tmp` -> `/private/tmp` style symlinks are resolved
 with `EvalSymlinks` before any comparison.
@@ -216,24 +396,32 @@ GoReleaser and the Homebrew formula pass the tag. A build with no linked version
 `go install ...@v0.1.0`) reads the module version from the build information, and a leading
 `v` is stripped, so every install channel prints the same text (`cmd/caged/version.go`). The
 composition root passes that string to `app.NewImageEnsurer`, which writes it into the
-`version` label of every image it builds, and to the doctor's header. Release steps are in
-[releasing.md](releasing.md).
+`version` label of every image it builds, and to the doctor's header. Releases are automated
+(`.github/workflows/release.yml`, the branch rules in [CONTRIBUTING.md](../CONTRIBUTING.md));
+`make release-check` validates the packaging locally without publishing.
 
 ## Adding a new agent
 
-Before this refactor:
-
-1. Add an entry to the global `registry` map literal in `internal/agent/agent.go`.
-2. Edit the two hard-coded agent lists in `internal/agent/agent_test.go`.
-3. If the agent needed a new prompt style, edit the `switch` in `internal/plan/run.go`.
-
-After this refactor:
-
 1. Create `internal/agent/<name>.go` containing one function that returns the
-   `Agent` value.
+   `Agent` value: its command, prompt style, config paths (with `Writable`,
+   and `MaskPaths`, `EnvOverride` or `Staged` when it needs them) and the
+   credential variables it reads.
 2. Add one line, `<name>(),`, to the list in `internal/agent/builtin.go`.
+3. Install it in `internal/images/Dockerfile`: a `RUN` step in the build
+   stage (and a `COPY --from=caged-build` of what it installed), its config
+   directories under `/home/caged` in the final stage's `mkdir -p` and
+   `chmod 0777` lists (Linux runs as the host user, who must be able to write
+   them), a link onto `PATH` in the final stage when it is installed with npm
+   (as Gemini and Copilot are), and its name in the `for cli in ...` loop that
+   records versions for `caged doctor`.
+4. Update `internal/agent/testdata/builtin_agents.golden`, which
+   `TestBuiltinAgentDefinitionsAreUnchanged` compares with every built-in
+   definition. It is edited by hand: `CAGED_UPDATE_GOLDEN=1` only creates a
+   missing golden file and never overwrites one. The command goldens in
+   `cmd/caged/testdata` do not change: they run with the six original agents
+   (`originalAgents`).
 
-Nothing else changes. `TestBuiltinRegistryContract` and
+No Go code outside `internal/agent` changes. `TestBuiltinRegistryContract` and
 `TestAgentNamesDoNotCollideWithSubcommands` check the new entry automatically.
 The config resolver, planner, CLI completion, and `caged list` pick it up from
 the registry.

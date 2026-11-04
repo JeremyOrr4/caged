@@ -1,8 +1,9 @@
 package images
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/JeremyOrr4/caged/internal/plan"
 )
@@ -10,28 +11,29 @@ import (
 // Target is one image caged builds and keeps current: its tag, its build
 // context, and the labels that identify what it was built from.
 type Target struct {
-	Role        Role
-	Ref         string
-	Files       []plan.File
-	Identity    []plan.Label // labels that must match for the image to be current
-	Version     string       // the caged version that would build it
-	Source      string       // where an extension came from; empty for the base
-	ContextName string       // names the temporary build directory
+	role     Role
+	Ref      string
+	Files    []plan.File
+	Identity []plan.Label // labels that must match for the image to be current
+
+	version     string         // the caged version that would build it
+	ext         plan.Extension // what an extension adds; zero for the base
+	contextName string         // names the temporary build directory
 }
 
 // Base returns the runtime image built by the caged version.
 func Base(version string) Target {
 	files := baseFiles()
 	return Target{
-		Role:  RoleRuntime,
+		role:  RoleRuntime,
 		Ref:   BaseRef,
 		Files: files,
 		Identity: []plan.Label{
 			{Key: LabelRole, Value: string(RoleRuntime)},
 			{Key: LabelRuntimeHash, Value: ContextHash(files)},
 		},
-		Version:     version,
-		ContextName: "caged-runtime",
+		version:     version,
+		contextName: "caged-runtime",
 	}
 }
 
@@ -43,12 +45,12 @@ func (t Target) Spec(opts plan.BuildOptions) plan.BuildSpec {
 		file.Data = append([]byte(nil), file.Data...)
 		files[i] = file
 	}
-	labels := append(append([]plan.Label(nil), t.Identity...), plan.Label{Key: LabelVersion, Value: t.Version})
-	sort.Slice(labels, func(i, j int) bool { return labels[i].Key < labels[j].Key })
+	labels := append(slices.Clone(t.Identity), plan.Label{Key: LabelVersion, Value: t.version})
+	slices.SortFunc(labels, func(a, b plan.Label) int { return cmp.Compare(a.Key, b.Key) })
 	return plan.BuildSpec{
 		Image:       t.Ref,
 		Dockerfile:  "Dockerfile",
-		ContextName: t.ContextName,
+		ContextName: t.contextName,
 		Files:       files,
 		Labels:      labels,
 		NoCache:     opts.NoCache,
@@ -100,7 +102,7 @@ func (t Target) Assess(labels map[string]string, found bool) Freshness {
 
 // hashLabel is the label that holds the hash of the target's build context.
 func (t Target) hashLabel() string {
-	if t.Role == RoleExtension {
+	if t.role == RoleExtension {
 		return LabelExtensionHash
 	}
 	return LabelRuntimeHash
@@ -110,11 +112,11 @@ func (t Target) hashLabel() string {
 // it is current. The "built by caged X" form is used only when the installed
 // image has a version label that differs from the target's.
 func (t Target) Notice(f Freshness) string {
-	if t.Role == RoleExtension {
+	if t.role == RoleExtension {
 		if f.State == StateCurrent {
 			return ""
 		}
-		return fmt.Sprintf("Building image extension from %s...", t.Source)
+		return fmt.Sprintf("Building image extension from %s...", t.extensionSource())
 	}
 	switch f.State {
 	case StateMissing:
@@ -122,8 +124,8 @@ func (t Target) Notice(f Freshness) string {
 	case StateUnlabeled:
 		return fmt.Sprintf("Runtime image %s was built by an older caged; rebuilding it once (this can take a few minutes)...", t.Ref)
 	case StateChanged:
-		if f.BuiltBy != "" && f.BuiltBy != t.Version {
-			return fmt.Sprintf("Runtime image %s was built by caged %s; rebuilding it for caged %s (this can take a few minutes)...", t.Ref, f.BuiltBy, t.Version)
+		if f.BuiltBy != "" && f.BuiltBy != t.version {
+			return fmt.Sprintf("Runtime image %s was built by caged %s; rebuilding it for caged %s (this can take a few minutes)...", t.Ref, f.BuiltBy, t.version)
 		}
 		return fmt.Sprintf("Runtime image %s is out of date (its runtime files changed); rebuilding...", t.Ref)
 	default:
@@ -133,8 +135,8 @@ func (t Target) Notice(f Freshness) string {
 
 // Describe returns the --verbose text for a target that is current.
 func (t Target) Describe() string {
-	if t.Role == RoleExtension {
-		return fmt.Sprintf("extension from %s -> %s", t.Source, t.Ref)
+	if t.role == RoleExtension {
+		return fmt.Sprintf("extension from %s -> %s", t.extensionSource(), t.Ref)
 	}
 	return fmt.Sprintf("%s is current (runtime %.12s)", t.Ref, t.labelValue(t.hashLabel()))
 }
@@ -152,8 +154,8 @@ func (t Target) labelValue(key string) string {
 // extension names its file, because a typo in a package name blocks every run
 // until the file is fixed. The runtime image has no such advice.
 func (t Target) WrapBuildError(err error) error {
-	if t.Role == RoleExtension {
-		return fmt.Errorf("building the image extension from %s failed; fix or remove that file: %w", t.extensionPath(), err)
+	if t.role == RoleExtension {
+		return fmt.Errorf("building the image extension from %s failed; fix or remove that file: %w", t.ext.Source, err)
 	}
 	return err
 }

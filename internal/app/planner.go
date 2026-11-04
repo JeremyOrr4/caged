@@ -39,8 +39,8 @@ func NewPlanner(env Env, project ProjectResolver, configs ConfigResolver) *Plann
 	return &Planner{env: env, project: project, configs: configs}
 }
 
-// homeLookup resolves the home directory at most once per Plan call, and only
-// when a step needs it.
+// homeLookup resolves the home directory at most once per Plan or Diagnose
+// call, and only when a step needs it.
 type homeLookup struct {
 	env  Env
 	dir  string
@@ -71,7 +71,7 @@ func (p *Planner) Plan(request Request, imageRef string, rep *Reporter) (plan.Ru
 		rep.Notice("WARNING: allowlisted agent credentials are available inside the container.")
 	}
 	for _, port := range ports {
-		rep.Detail("port: publish %s:%d -> container %d", port.HostIP, port.HostPort, port.ContainerPort)
+		rep.detail("port: publish %s:%d -> container %d", port.HostIP, port.HostPort, port.ContainerPort)
 	}
 	home := &homeLookup{env: p.env}
 	mount, err := p.projectMount(request, home)
@@ -86,13 +86,13 @@ func (p *Planner) Plan(request Request, imageRef string, rep *Reporter) (plan.Ru
 	if request.Agent != nil {
 		selected = *request.Agent
 	}
-	envVars := selected.ResolveEnv(request.EnvVars, p.isSet)
+	envVars := selected.ResolveEnv(request.EnvVars, envSet(p.env))
 	logEnvResolution(rep, selected, request.EnvVars, envVars)
 	spec, err := buildRunSpec(runInputs{Image: imageRef, Agent: request.Agent, Prompt: request.Prompt, AgentArgs: request.AgentArgs, Mount: mount, Ports: ports, Configs: configMounts, Env: envVars})
 	if err != nil {
 		return plan.RunSpec{}, err
 	}
-	rep.Detail("command: %q", spec.Command)
+	rep.detail("command: %q", spec.Command)
 	return spec, nil
 }
 
@@ -136,24 +136,27 @@ func (p *Planner) configMounts(request Request, home *homeLookup, rep *Reporter)
 	return report.Mounts, nil
 }
 
-func (p *Planner) isSet(name string) bool {
-	_, ok := p.env.LookupEnv(name)
-	return ok
+// envSet reports whether a variable is set in env, even to "".
+func envSet(env Env) func(name string) bool {
+	return func(name string) bool {
+		_, ok := env.LookupEnv(name)
+		return ok
+	}
 }
 
 func logConfigReport(rep *Reporter, report plan.ConfigReport) {
 	for _, mount := range report.Mounts {
 		if mount.Link != "" {
-			rep.Detail("config: pass %s -> %s (via link %s)", mount.HostPath, mount.DestPath, mount.Link)
+			rep.detail("config: pass %s -> %s (via link %s)", mount.HostPath, mount.DestPath, mount.Link)
 		} else {
-			rep.Detail("config: pass %s -> %s", mount.HostPath, mount.DestPath)
+			rep.detail("config: pass %s -> %s", mount.HostPath, mount.DestPath)
 		}
 	}
 	for _, path := range report.Missing {
-		rep.Detail("config: missing %s", path)
+		rep.detail("config: missing %s", path)
 	}
 	for _, refusal := range report.Refused {
-		rep.Detail("config: refused %s", refusal)
+		rep.detail("config: refused %s", refusal)
 	}
 }
 
@@ -164,9 +167,9 @@ func logEnvResolution(rep *Reporter, selected agent.Agent, requested, resolved [
 	}
 	for _, name := range selected.EnvNames(requested) {
 		if _, ok := passed[name]; ok {
-			rep.Detail("env: pass %s", name)
+			rep.detail("env: pass %s", name)
 		} else {
-			rep.Detail("env: skipped %s (unset or disallowed)", name)
+			rep.detail("env: skipped %s (unset or disallowed)", name)
 		}
 	}
 }

@@ -17,23 +17,29 @@ func TestNewMountGuardRails(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		cwd   string
-		home  string
-		allow bool
-		want  string
+		name     string
+		cwd      string
+		home     string
+		allow    bool
+		want     string
+		wantPath string // default: /workspace/<base of cwd>
 	}{
 		{name: "filesystem root", cwd: "/", home: "/Users/test", want: "filesystem root"},
 		{name: "home directory", cwd: "/Users/test", home: "/Users/test", want: "entire home directory"},
 		{name: "allowed home directory", cwd: "/Users/test", home: "/Users/test", allow: true},
 		{name: "project directory", cwd: "/Users/test/code/caged", home: "/Users/test"},
+		{name: "allowed filesystem root has no folder name", cwd: "/", home: "/Users/test", allow: true, wantPath: "/workspace/project"},
+		// docker -v splits at ":" (bugs.md Q-DK-1, WB-T2); a comma or quote mounts as it is
+		{name: "colon in the folder name", cwd: "/Users/test/a:b", home: "/Users/test", want: `refusing to mount /Users/test/a:b: the path contains ":", which docker cannot mount`},
+		{name: "colon in a parent folder", cwd: "/Users/x:y,source=/etc/p", home: "/Users/test", allow: true, want: `the path contains ":"`},
+		{name: "comma and quote", cwd: "/Users/test/c,d\"e", home: "/Users/test"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			mount, err := NewMount(tt.cwd, tt.home, tt.allow)
+			mount, err := newMount(tt.cwd, tt.home, tt.allow, false)
 			if tt.want != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.want) {
 					t.Fatalf("newMount() error = %v, want %q", err, tt.want)
@@ -43,7 +49,10 @@ func TestNewMountGuardRails(t *testing.T) {
 			if err != nil {
 				t.Fatalf("newMount() error = %v", err)
 			}
-			wantPath := filepath.Join("/workspace", filepath.Base(filepath.Clean(tt.cwd)))
+			wantPath := tt.wantPath
+			if wantPath == "" {
+				wantPath = filepath.Join("/workspace", filepath.Base(filepath.Clean(tt.cwd)))
+			}
 			if mount.ContainerPath != wantPath {
 				t.Errorf("container path = %q, want %q", mount.ContainerPath, wantPath)
 			}
@@ -63,26 +72,26 @@ func TestResolveProjectMount(t *testing.T) {
 	if err := os.WriteFile(file, []byte("test"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	resolver := NewResolver(system.FS{}, nil)
+	resolver := NewResolver(system.FS{}, nil, false)
 
 	mount, err := resolver.Resolve(projectPath, home, false)
 	if err != nil {
-		t.Fatalf("resolveProjectMount() error = %v", err)
+		t.Fatalf("Resolve() error = %v", err)
 	}
 	resolvedProject, err := filepath.EvalSymlinks(projectPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if mount.HostPath != resolvedProject || mount.ContainerPath != "/workspace/project" {
-		t.Fatalf("resolveProjectMount() = %+v, want host %q at /workspace/project", mount, resolvedProject)
+		t.Fatalf("Resolve() = %+v, want host %q at /workspace/project", mount, resolvedProject)
 	}
 
 	if _, err := resolver.Resolve(file, home, false); err == nil || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("resolveProjectMount(file) error = %v, want not-a-directory error", err)
+		t.Fatalf("Resolve(file) error = %v, want not-a-directory error", err)
 	}
 
 	if _, err := resolver.Resolve(home, home, false); err == nil || !strings.Contains(err.Error(), "entire home directory") {
-		t.Fatalf("resolveProjectMount(home) error = %v, want broad-mount rejection", err)
+		t.Fatalf("Resolve(home) error = %v, want broad-mount rejection", err)
 	}
 }
 
@@ -146,7 +155,7 @@ func TestResolverResolvesRelativePathsAndMacOSSymlinks(t *testing.T) {
 		entries:  map[string]bool{"/tmp/app": true},
 		resolved: map[string]string{"/tmp/app": "/private/tmp/app", "/Users/dev": "/Users/dev"},
 	}
-	mount, err := NewResolver(fsys, nil).Resolve("app", "/Users/dev", false)
+	mount, err := NewResolver(fsys, nil, false).Resolve("app", "/Users/dev", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +171,7 @@ func TestResolverComparesHomeAfterResolvingSymlinks(t *testing.T) {
 		entries:  map[string]bool{"/home/dev": true},
 		resolved: map[string]string{"/home/dev": "/data/home/dev"},
 	}
-	if _, err := NewResolver(fsys, nil).Resolve("/home/dev", "/home/dev", false); err == nil || !strings.Contains(err.Error(), "entire home directory") {
+	if _, err := NewResolver(fsys, nil, false).Resolve("/home/dev", "/home/dev", false); err == nil || !strings.Contains(err.Error(), "entire home directory") {
 		t.Fatalf("Resolve(home) error = %v, want broad-mount rejection", err)
 	}
 }
@@ -188,7 +197,7 @@ func TestResolverErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := NewResolver(tt.fsys, nil).Resolve("/work/app", "/Users/dev", false); err == nil || err.Error() != tt.want {
+			if _, err := NewResolver(tt.fsys, nil, false).Resolve("/work/app", "/Users/dev", false); err == nil || err.Error() != tt.want {
 				t.Fatalf("Resolve() error = %v, want %q", err, tt.want)
 			}
 		})
@@ -236,7 +245,7 @@ func TestResolverAppliesTheWorkdirPolicy(t *testing.T) {
 	t.Run("a directory under workdirs.allow is mounted", func(t *testing.T) {
 		t.Parallel()
 		policies := &fakePolicies{policy: policy}
-		mount, err := NewResolver(fsys, policies).Resolve("/Users/dev/git/app", "/Users/dev", false)
+		mount, err := NewResolver(fsys, policies, false).Resolve("/Users/dev/git/app", "/Users/dev", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -246,7 +255,7 @@ func TestResolverAppliesTheWorkdirPolicy(t *testing.T) {
 	})
 	t.Run("a directory outside workdirs.allow is refused with a hint", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewResolver(fsys, &fakePolicies{policy: policy}).Resolve("/Users/dev/other/app", "/Users/dev", false)
+		_, err := NewResolver(fsys, &fakePolicies{policy: policy}, false).Resolve("/Users/dev/other/app", "/Users/dev", false)
 		want := `refusing to mount /Users/dev/other/app: it is not under workdirs.allow; add "- path: ~/other/app" under workdirs.allow in ~/.config/caged/config.yaml`
 		if err == nil || err.Error() != want {
 			t.Fatalf("Resolve() error = %v, want %q", err, want)
@@ -254,21 +263,21 @@ func TestResolverAppliesTheWorkdirPolicy(t *testing.T) {
 	})
 	t.Run("--allow-broad-mount does not bypass it", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewResolver(fsys, &fakePolicies{policy: policy}).Resolve("/Users/dev/other/app", "/Users/dev", true)
+		_, err := NewResolver(fsys, &fakePolicies{policy: policy}, false).Resolve("/Users/dev/other/app", "/Users/dev", true)
 		if err == nil || !strings.Contains(err.Error(), "workdirs.allow") {
 			t.Fatalf("Resolve() error = %v, want a workdirs.allow refusal", err)
 		}
 	})
 	t.Run("no policy allows every directory", func(t *testing.T) {
 		t.Parallel()
-		if _, err := NewResolver(fsys, &fakePolicies{}).Resolve("/Users/dev/other/app", "/Users/dev", false); err != nil {
+		if _, err := NewResolver(fsys, &fakePolicies{}, false).Resolve("/Users/dev/other/app", "/Users/dev", false); err != nil {
 			t.Fatal(err)
 		}
 	})
 	t.Run("a policy error is passed through", func(t *testing.T) {
 		t.Parallel()
 		policyErr := errors.New("~/.config/caged/config.yaml: invalid YAML: line 1")
-		_, err := NewResolver(fsys, &fakePolicies{err: policyErr}).Resolve("/Users/dev/git/app", "/Users/dev", false)
+		_, err := NewResolver(fsys, &fakePolicies{err: policyErr}, false).Resolve("/Users/dev/git/app", "/Users/dev", false)
 		if !errors.Is(err, policyErr) {
 			t.Fatalf("Resolve() error = %v, want %v", err, policyErr)
 		}
@@ -283,7 +292,7 @@ func TestResolverAsksThePolicyAboutTheHomeAsGiven(t *testing.T) {
 		resolved: map[string]string{"/home/dev/app": "/data/home/dev/app", "/home/dev": "/data/home/dev"},
 	}
 	policies := &fakePolicies{policy: workdirPolicy(t, "/home/dev", "/data/home/dev")}
-	if _, err := NewResolver(fsys, policies).Resolve("/home/dev/app", "/home/dev", false); err != nil {
+	if _, err := NewResolver(fsys, policies, false).Resolve("/home/dev/app", "/home/dev", false); err != nil {
 		t.Fatal(err)
 	}
 	if policies.gotHome != "/home/dev" {
