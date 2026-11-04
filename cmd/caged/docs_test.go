@@ -30,7 +30,7 @@ var checkedDocs = []string{
 // foreignFlags are flags the docs name that belong to other programs, so no
 // caged command has them.
 var foreignFlags = map[string]string{
-	"--rm": "docker", "--user": "docker", "--tmpfs": "docker", "--label": "docker", "--iidfile": "docker",
+	"--rm": "docker", "--user": "docker", "--tmpfs": "docker", "--mount": "docker", "--label": "docker", "--iidfile": "docker",
 	"--entrypoint": "docker", "--format": "docker", "--platform": "docker", "--detach-keys": "docker",
 	"-it": "docker", "-v": "docker", "-e": "docker", "-f": "docker",
 	"--model": "an agent", "--resume": "an agent", "--add-dir": "an agent", "--provider": "an agent",

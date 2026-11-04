@@ -59,24 +59,16 @@ func (l *Lister) List() ([]AgentStatus, error) {
 }
 
 // describeRoots turns the root of each mount into one display entry per
-// distinct root: the path with the home directory shown as "~", and the
-// number of files when one root was split into several mounts.
+// distinct root, with the home directory shown as "~". A root's link targets
+// are mounts of their own, so a root can appear more than once in roots.
 func describeRoots(home string, roots []string) []string {
-	var order []string
-	counts := map[string]int{}
-	for _, root := range roots {
-		if counts[root] == 0 {
-			order = append(order, root)
-		}
-		counts[root]++
-	}
 	var described []string
-	for _, root := range order {
-		entry := pathpolicy.Tilde(home, root)
-		if counts[root] > 1 {
-			entry += fmt.Sprintf(" (%d files)", counts[root])
+	seen := map[string]bool{}
+	for _, root := range roots {
+		if !seen[root] {
+			seen[root] = true
+			described = append(described, pathpolicy.Tilde(home, root))
 		}
-		described = append(described, entry)
 	}
 	return described
 }

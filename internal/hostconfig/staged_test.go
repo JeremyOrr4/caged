@@ -35,12 +35,15 @@ func describeReport(report plan.ConfigReport, home, resolvedHome string) string 
 	return b.String()
 }
 
+// TestResolveStagedTrees: midlink resolves on the host, but its ".." after a
+// name is not followed in the container, so the staged tree runs from a copy.
+// Its links are masked and their targets mounted at the links' paths.
 func TestResolveStagedTrees(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can read the unreadable directory")
 	}
 	home, resolvedHome := testHome(t, []string{".st/sub", ".st/locked"}, []string{".st/a.json", ".st/sub/b.json", ".stfile"})
-	for link, target := range map[string]string{"dirlink": "sub", "filelink": "a.json", "dangling": "missing.json"} {
+	for link, target := range map[string]string{"dirlink": "sub", "filelink": "a.json", "midlink": "sub/../a.json", "dangling": "missing.json"} {
 		if err := os.Symlink(target, filepath.Join(home, ".st", link)); err != nil {
 			t.Fatal(err)
 		}
@@ -64,10 +67,47 @@ func TestResolveStagedTrees(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "" +
-		"mount st ~/.st -> /home/caged/.st root=~/.st writable=true staged=true masks=[dirlink locked] files=[dangling filelink pipe] link=\n" +
+		"mount st ~/.st -> /home/caged/.st root=~/.st writable=true staged=true masks=[dirlink locked] files=[dangling filelink midlink pipe] link=\n" +
 		"mount st ~/.st/sub -> /home/caged/.st/dirlink root=~/.st writable=true staged=true masks=[] files=[] link=~/.st/dirlink\n" +
 		"mount st ~/.st/a.json -> /home/caged/.st/filelink root=~/.st writable=true staged=true masks=[] files=[] link=~/.st/filelink\n" +
-		"mount st ~/.stfile -> /home/caged/.stfile root=~/.stfile writable=true staged=true masks=[] files=[] link=\n" +
+		"mount st ~/.st/a.json -> /home/caged/.st/midlink root=~/.st writable=true staged=true masks=[] files=[] link=~/.st/midlink\n" +
+		"mount st ~/.stfile -> /home/caged/.stfile root=~/.stfile writable=true staged=false masks=[] files=[] link=\n" +
+		"refused ~/.st/locked (cannot inspect config entry safely)\n" +
+		"refused ~/.st/pipe (special files are excluded from config mounts)\n" +
+		"refused ~/.st/dangling (dangling or unresolvable symlink)\n"
+	if got := describeReport(report, home, resolvedHome); got != want {
+		t.Fatalf("report:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestStagedTreeIsLiveWhenTheContainerCanFollowEveryLink: links that resolve
+// inside the tree in the container as on the host need no copy, so the tree
+// is mounted live with only its special files and unreadable entries hidden.
+func TestStagedTreeIsLiveWhenTheContainerCanFollowEveryLink(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read the unreadable directory")
+	}
+	home, resolvedHome := testHome(t, []string{".st/sub", ".st/locked"}, []string{".st/a.json", ".st/sub/b.json"})
+	for link, target := range map[string]string{"dirlink": "sub", "filelink": "a.json", "dangling": "missing.json"} {
+		if err := os.Symlink(target, filepath.Join(home, ".st", link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := syscall.Mkfifo(filepath.Join(home, ".st", "pipe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(home, ".st", "locked")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	report, err := NewResolver(Deps{FS: system.FS{}, Env: testkit.Env{}, Agents: stagedAgents(), Policies: policies{}}).Resolve(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "" +
+		"mount st ~/.st -> /home/caged/.st root=~/.st writable=true staged=false masks=[locked] files=[pipe] link=\n" +
 		"refused ~/.st/locked (cannot inspect config entry safely)\n" +
 		"refused ~/.st/pipe (special files are excluded from config mounts)\n" +
 		"refused ~/.st/dangling (dangling or unresolvable symlink)\n"
@@ -77,8 +117,8 @@ func TestResolveStagedTrees(t *testing.T) {
 }
 
 func TestResolveStagedTreeTwiceKeepsMaskFilesOnTheRoot(t *testing.T) {
-	home, _ := testHome(t, []string{".st"}, []string{".st/a.json"})
-	if err := os.Symlink("a.json", filepath.Join(home, ".st", "filelink")); err != nil {
+	home, _ := testHome(t, []string{".st", ".st/d"}, []string{".st/a.json"})
+	if err := os.Symlink("d/../a.json", filepath.Join(home, ".st", "filelink")); err != nil {
 		t.Fatal(err)
 	}
 	path := agent.ConfigPath{HostPath: ".st", ContainerPath: ".st", Writable: true, Staged: true}
@@ -108,7 +148,7 @@ func TestStagedTreeEntryThatCannotBeInspected(t *testing.T) {
 	}
 
 	want := "" +
-		"mount st ~/.st -> /home/caged/.st root=~/.st writable=true staged=true masks=[] files=[b.json] link=\n" +
+		"mount st ~/.st -> /home/caged/.st root=~/.st writable=true staged=false masks=[] files=[b.json] link=\n" +
 		"refused ~/.st/b.json (cannot inspect config entry safely)\n"
 	if got := describeReport(report, home, resolvedHome); got != want {
 		t.Fatalf("report:\n%s\nwant:\n%s", got, want)

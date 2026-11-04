@@ -34,6 +34,9 @@ func homeBesideTheTest(t *testing.T, prefix string) string {
 	return dir
 }
 
+// unfollowableHint ends the refusal of a link the container cannot follow.
+const unfollowableHint = "; " + hintUnfollowable
+
 func TestCodexTreeWithARelativeLinkKeepsTheWholeMount(t *testing.T) {
 	t.Parallel()
 	home, resolved := testHome(t, nil, nil)
@@ -107,7 +110,7 @@ func TestMaskedLinkThatCannotBeFollowedInTheContainerIsRefused(t *testing.T) {
 
 	report := resolveConfigs(t, home, nil)
 
-	want := []string{filepath.Join(resolved, ".codex/x") + " (symlink to /etc/x cannot be followed inside the container)"}
+	want := []string{filepath.Join(resolved, ".codex/x") + " (symlink to /etc/x cannot be followed inside the container)" + unfollowableHint}
 	if got := refusedStrings(report.Refused); !slices.Equal(got, want) {
 		t.Fatalf("Refused = %v, want %v", got, want)
 	}
@@ -125,7 +128,7 @@ func TestMaskedLinkToADirectoryHoldingTheContainerHomeIsRefused(t *testing.T) {
 
 	report := resolveConfigsWith(t, home, nil, policies{allow: []string{"/home"}})
 
-	want := []string{filepath.Join(resolved, ".codex/h") + " (symlink to /home cannot be followed inside the container)"}
+	want := []string{filepath.Join(resolved, ".codex/h") + " (symlink to /home cannot be followed inside the container)" + unfollowableHint}
 	if got := refusedStrings(report.Refused); !slices.Equal(got, want) {
 		t.Fatalf("Refused = %v, want %v", got, want)
 	}

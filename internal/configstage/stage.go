@@ -1,5 +1,6 @@
-// Package configstage runs staged config mounts (agent.ConfigPath.Staged)
-// from symlink-free copies, and writes the container's changes back.
+// Package configstage runs copied config mounts (Pi's fallback when a tree
+// cannot be mounted live; see agent.ConfigPath.Staged) from symlink-free
+// copies, and writes the container's changes back.
 //
 // Docker resolves a nested mount destination through any symlink inside the
 // parent bind mount, so mounting a staged tree's masks and link targets

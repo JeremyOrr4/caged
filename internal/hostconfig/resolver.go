@@ -118,6 +118,7 @@ func (r *Resolver) Resolve(home string) (plan.ConfigReport, error) {
 		}
 	}
 	pass := &resolution{fs: r.deps.FS, policy: policy, home: home, resolvedHome: resolvedHome, seen: make(map[string]struct{})}
+	pass.masked = r.maskedHostPaths(home)
 	for _, definition := range r.deps.Agents {
 		for _, configPath := range definition.ConfigPaths {
 			pass.agentPath(definition.Name, configPath, r.hostPath(home, configPath))
@@ -139,6 +140,29 @@ func (r *Resolver) Resolve(home string) (plan.ConfigReport, error) {
 	}
 	pass.dropNestedLinkMounts()
 	return pass.report, nil
+}
+
+// maskedHostPaths returns the resolved host paths every agent's MaskPaths
+// hide, so a symlink from any config tree cannot mount them.
+func (r *Resolver) maskedHostPaths(home string) []string {
+	var masked []string
+	for _, definition := range r.deps.Agents {
+		for _, configPath := range definition.ConfigPaths {
+			if len(configPath.MaskPaths) == 0 {
+				continue
+			}
+			root, err := r.deps.FS.EvalSymlinks(r.hostPath(home, configPath))
+			if err != nil {
+				continue // a missing or unresolvable root is never mounted
+			}
+			paths, err := maskedPaths(root, configPath.MaskPaths)
+			if err != nil {
+				continue // agentPath refuses the root
+			}
+			masked = append(masked, paths...)
+		}
+	}
+	return masked
 }
 
 // hostPath is where a config path lives on the host. A set override variable

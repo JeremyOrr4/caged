@@ -14,11 +14,13 @@ type ConfigPath struct {
 	Writable      bool
 	EnvOverride   string
 	MaskPaths     []string
-	// Staged mounts the path as one tree, so the agent can create files as
-	// well as edit them. Docker reads it from a symlink-free copy made for the
-	// run: symlinks and special files are hidden, allowed symlink targets are
-	// mounted back at their link paths, and the container's changes are
-	// written back to the host when it exits.
+	// Staged lets the path run from a copy when it cannot be mounted live.
+	// Every config path is mounted whole and live when each of its symlinks
+	// can be followed inside the container. When one cannot, a Staged path
+	// runs from a symlink-free copy made for the run instead: symlinks and
+	// special files are hidden, allowed symlink targets are mounted back at
+	// their link paths, and the container's changes are written back to the
+	// host when it exits. Any other path just has that link refused.
 	Staged bool
 }
 

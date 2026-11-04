@@ -21,54 +21,53 @@ func TestMountPathsWithAColonAreRefused(t *testing.T) {
 
 	home := realHome(t)
 	writeFiles(t, home, ".claude/settings.json", "dotfiles/f.md", "dotfiles/a:b/x.md", ".claude/sub:x/y.json", "dotfiles/c,d\"e\nf/g.md")
-	symlink(t, home, ".claude/x:ro", filepath.Join(home, "dotfiles", "f.md"))     // container path holds ":"
-	symlink(t, home, ".claude/ab", filepath.Join(home, "dotfiles", "a:b"))        // host path holds ":"
-	symlink(t, home, ".claude/odd", filepath.Join(home, "dotfiles", "c,d\"e\nf")) // mounted as it is
+	symlink(t, home, ".claude/x:ro", "../dotfiles/f.md")     // the link's name holds ":"
+	symlink(t, home, ".claude/ab", "../dotfiles/a:b")        // host path holds ":"
+	symlink(t, home, ".claude/odd", "../dotfiles/c,d\"e\nf") // mounted as it is
 
 	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
 
+	// ~/.claude is mounted whole, so x:ro and sub:x are entries inside the
+	// mount and reach docker only as part of it; the target with a colon is
+	// mounted on its own and is refused.
 	const reason = `path contains ":", which docker cannot mount`
-	for _, path := range []string{
-		filepath.Join(home, ".claude", "x:ro"),
-		filepath.Join(home, "dotfiles", "a:b"),
-		filepath.Join(home, ".claude", "sub:x"),
-	} {
-		if refusal, ok := refusalAt(report, path); !ok || refusal != (plan.Refusal{Path: path, Reason: reason}) {
-			t.Errorf("refusal for %s = %+v, %v; want %q", path, refusal, ok, reason)
-		}
+	path := filepath.Join(home, "dotfiles", "a:b")
+	if refusal, ok := refusalAt(report, path); !ok || refusal != (plan.Refusal{Path: path, Reason: reason}) {
+		t.Errorf("refusal for %s = %+v, %v; want %q", path, refusal, ok, reason)
+	}
+	if len(report.Refused) != 1 {
+		t.Errorf("Refused = %v, want only %s", refusedStrings(report.Refused), path)
 	}
 	for _, mount := range report.Mounts {
 		if strings.Contains(mount.HostPath, ":") || strings.Contains(mount.DestPath, ":") {
 			t.Errorf("mount %+v holds a colon", mount)
 		}
 	}
-	if mount, ok := mountAt(report, "/home/caged/.claude/odd"); !ok || mount.HostPath != filepath.Join(home, "dotfiles", "c,d\"e\nf") {
+	mustMount(t, report, "/home/caged/.claude")
+	mustMount(t, report, "/home/caged/dotfiles/f.md")
+	if mount, ok := mountAt(report, "/home/caged/dotfiles/c,d\"e\nf"); !ok || mount.HostPath != filepath.Join(home, "dotfiles", "c,d\"e\nf") {
 		t.Errorf("mount = %+v, %v; want the comma, quote and newline path mounted", mount, ok)
 	}
 }
 
-// TestColonLinksInWholeAndStagedTreesAreRefused: in a Codex tree (mounted
-// whole) a link stays visible as itself, so only a target with a colon, which
-// is mounted where the link points, is refused; in a Pi tree (staged) the link
-// is mounted at its own place, so a colon in its name is refused. Either tree
-// is still mounted. A staged tree's masks never reach docker (configstage
-// mounts a symlink-free copy and drops them), so they need no check.
-func TestColonLinksInWholeAndStagedTreesAreRefused(t *testing.T) {
+// TestColonLinksInWholeTreesAreRefused: in a whole tree, a link stays visible
+// as itself, so only a target with a colon, which is mounted where the link
+// points, is refused. Pi's tree stays live here because its relative link can
+// be followed in the container; a colon in the link's own name is part of the
+// whole-tree mount and does not need a separate docker mount.
+func TestColonLinksInWholeTreesAreRefused(t *testing.T) {
 	t.Parallel()
 
 	home := realHome(t)
 	writeFiles(t, home, ".codex/config.toml", ".pi/agent/settings.json", "dotfiles/f.md", "dotfiles/a:b.md")
 	symlink(t, home, ".codex/x:ro", "../dotfiles/f.md") // a whole tree needs a link the container can follow
 	symlink(t, home, ".codex/ab", "../dotfiles/a:b.md")
-	symlink(t, home, ".pi/agent/y:ro", filepath.Join(home, "dotfiles", "f.md"))
+	symlink(t, home, ".pi/agent/y:ro", "../../dotfiles/f.md")
 
 	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
 
 	const reason = `path contains ":", which docker cannot mount`
-	want := []string{
-		filepath.Join(home, "dotfiles", "a:b.md") + " (" + reason + ")",
-		filepath.Join(home, ".pi", "agent", "y:ro") + " (" + reason + ")",
-	}
+	want := []string{filepath.Join(home, "dotfiles", "a:b.md") + " (" + reason + ")"}
 	if got := refusedStrings(report.Refused); !slices.Equal(got, want) {
 		t.Errorf("refused = %q; want %q", got, want)
 	}

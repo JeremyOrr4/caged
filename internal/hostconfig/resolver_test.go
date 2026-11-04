@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -238,7 +239,7 @@ func TestConfigSymlinkOutsideConfigDirectoryIsRefused(t *testing.T) {
 	}
 }
 
-func TestSpecialFileInsideConfigTreeIsRefused(t *testing.T) {
+func TestSpecialFileInsideConfigTreeIsHiddenAndRefused(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	configDir := filepath.Join(home, ".gemini")
@@ -250,8 +251,8 @@ func TestSpecialFileInsideConfigTreeIsRefused(t *testing.T) {
 	}
 	report := resolveConfigs(t, home, nil)
 	for _, mount := range report.Mounts {
-		if mount.Name == ".gemini" {
-			t.Fatal("config tree containing a socket was mounted")
+		if mount.Name == ".gemini" && !slices.Contains(mount.MaskFiles, "agent.pipe") {
+			t.Fatalf("config tree mounted with its special file visible: %+v", mount)
 		}
 	}
 	if len(report.Refused) == 0 {

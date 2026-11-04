@@ -41,7 +41,7 @@ func TestNamesDifferingOnlyInCaseAreOneFolderOnMacOS(t *testing.T) {
 					s.write("home/.config/caged/config.yaml", "links:\n  allow:\n    - path: ~/.SSH\n")
 				},
 				refusal: `~/.config/caged/config.yaml: links.allow entry "~/.SSH" is inside the denied path "~/.ssh"`,
-				mount:   "home/.SSH/id_ed25519:/home/caged/.claude/key",
+				mount:   "home/.SSH/id_ed25519:/home/caged/.SSH/id_ed25519",
 				fails:   true,
 			},
 			{

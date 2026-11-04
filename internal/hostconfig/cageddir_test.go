@@ -208,7 +208,7 @@ func TestSymlinkedConfigFileIsFollowedOnlyWhenAllowed(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".config", "caged"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	symlink(t, home, ".config/caged/config.yaml", filepath.Join(home, "dotfiles", "caged.yaml"))
+	symlink(t, home, ".config/caged/config.yaml", "../../dotfiles/caged.yaml")
 	dir := filepath.Join(home, ".config", "caged")
 	link := filepath.Join(dir, "config.yaml")
 
@@ -221,12 +221,14 @@ func TestSymlinkedConfigFileIsFollowedOnlyWhenAllowed(t *testing.T) {
 	}
 
 	report = resolveWithCagedDir(t, home, dir, policies{allow: []string{filepath.Join(home, "dotfiles")}})
-	mount, ok := mountAt(report, cagedDest+"/config.yaml")
-	if !ok || mount.HostPath != filepath.Join(home, "dotfiles", "caged.yaml") || !mount.Writable {
-		t.Fatalf("mounts = %+v, refused = %+v; want the allowed file mounted over config.yaml", report.Mounts, report.Refused)
+	// The folder is mounted whole with the link visible; the file is mounted
+	// where the link points in the container.
+	mount, ok := mountAt(report, "/home/caged/dotfiles/caged.yaml")
+	if !ok || mount.HostPath != filepath.Join(home, "dotfiles", "caged.yaml") || !mount.Writable || mount.Link != link {
+		t.Fatalf("mounts = %+v, refused = %+v; want the allowed file mounted where config.yaml points", report.Mounts, report.Refused)
 	}
-	if _, ok := mountAt(report, cagedDest); ok {
-		t.Error("the whole directory was mounted even though it holds a symlink")
+	if _, ok := mountAt(report, cagedDest); !ok {
+		t.Error("caged's folder was not mounted whole")
 	}
 }
 
@@ -303,7 +305,7 @@ func TestLinksInsideCagedDirAreJudgedByItsOwnPolicy(t *testing.T) {
 		home := realHome(t)
 		target := filepath.Join(home, "dotfiles", "caged")
 		writeFiles(t, target, "config.yaml")
-		symlink(t, home, "dotfiles/caged/up", filepath.Join(home, "dotfiles"))
+		symlink(t, home, "dotfiles/caged/up", "..")
 		symlink(t, home, ".config/caged", target)
 		report := resolveWithCagedDir(t, home, filepath.Join(home, ".config", "caged"), policies{allow: []string{filepath.Join(home, "dotfiles")}})
 		want := plan.Refusal{Path: filepath.Join(target, "up"), Reason: "symlink points to a directory that contains it"}

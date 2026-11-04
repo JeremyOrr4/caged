@@ -156,7 +156,11 @@ func logConfigReport(rep *Reporter, report plan.ConfigReport) {
 		rep.detail("config: missing %s", path)
 	}
 	for _, refusal := range report.Refused {
-		rep.detail("config: refused %s", refusal)
+		if refusal.Warn {
+			rep.Notice("WARNING: config: refused %s", refusal)
+		} else {
+			rep.detail("config: refused %s", refusal)
+		}
 	}
 }
 

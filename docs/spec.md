@@ -193,7 +193,7 @@ else:
 
 | ID | Requirement | Status |
 |---|---|---|
-| FR-11 | Existing host config is mounted **read-write** for every supported CLI so changes persist on the host (`Writable` on each `agent.ConfigPath`; a Pi tree that needs masks or nested link mounts runs from a staged copy that is written back, FR-13) | DONE |
+| FR-11 | Existing host config is mounted **read-write** for every supported CLI so changes persist on the host (`Writable` on each `agent.ConfigPath`; each config folder is mounted whole, so new files persist too; a Pi tree with a symlink the container cannot follow runs from a staged copy that is written back, FR-13) | DONE |
 | FR-12 | Missing host config is skipped and never created on the host (caged's own `config.yaml` is the one exception, FR-30) | DONE |
 | FR-13 | Symlinks in agent config are followed on the host and their targets mounted where the links point; a target outside the link's own config folder must be under `links.allow`, and the built-in deny list always wins, for a config folder that is not a symlink too; sockets and special files are never exposed | DONE |
 | FR-14 | `--no-config` disables all config mounts | DONE |

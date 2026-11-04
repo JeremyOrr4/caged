@@ -78,7 +78,10 @@ func mustRefuse(t *testing.T, report plan.ConfigReport, path string) plan.Refusa
 	return refusal
 }
 
-func TestLinkedFileInSplitTreeIsMountedWhereTheLinkIs(t *testing.T) {
+// TestLinkedFileIsMountedWhereTheLinkPoints: the tree is mounted whole, so the
+// link is visible in the container, and its target is mounted where the
+// link's text points there.
+func TestLinkedFileIsMountedWhereTheLinkPoints(t *testing.T) {
 	t.Parallel()
 	home, resolved := testHome(t, nil, nil)
 	writeFiles(t, home, "dotfiles/claude/CLAUDE.md")
@@ -88,12 +91,13 @@ func TestLinkedFileInSplitTreeIsMountedWhereTheLinkIs(t *testing.T) {
 
 	want := plan.ConfigMount{
 		Agent: "claude", Name: ".claude",
-		HostPath: filepath.Join(resolved, "dotfiles/claude/CLAUDE.md"), DestPath: "/home/caged/.claude/CLAUDE.md",
+		HostPath: filepath.Join(resolved, "dotfiles/claude/CLAUDE.md"), DestPath: "/home/caged/dotfiles/claude/CLAUDE.md",
 		Root: filepath.Join(home, ".claude"), Writable: true, Link: filepath.Join(resolved, ".claude/CLAUDE.md"),
 	}
 	if got := mustMount(t, report, want.DestPath); fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", want) {
 		t.Fatalf("mount = %+v, want %+v", got, want)
 	}
+	mustMount(t, report, "/home/caged/.claude")
 	if len(report.Refused) != 0 {
 		t.Fatalf("Refused = %v, want none", refusedStrings(report.Refused))
 	}
@@ -107,8 +111,8 @@ func TestLinkedFileWithoutAllowIsRefusedWithAHint(t *testing.T) {
 
 	report := resolveConfigs(t, home, nil)
 
-	if len(report.Mounts) != 0 {
-		t.Fatalf("Mounts = %+v, want none", report.Mounts)
+	if len(report.Mounts) != 1 || report.Mounts[0].DestPath != "/home/caged/.claude" {
+		t.Fatalf("Mounts = %+v, want only the ~/.claude tree", report.Mounts)
 	}
 	if len(report.Refused) != 1 {
 		t.Fatalf("Refused = %v, want one refusal", refusedStrings(report.Refused))
@@ -122,7 +126,7 @@ func TestLinkedFileWithoutAllowIsRefusedWithAHint(t *testing.T) {
 	}
 }
 
-func TestLinkedDirectoryIsMountedWhereTheLinkIs(t *testing.T) {
+func TestLinkedDirectoryIsMountedWhereTheLinkPoints(t *testing.T) {
 	t.Parallel()
 	home, resolved := testHome(t, nil, nil)
 	writeFiles(t, home, "dotfiles/claude/agents/a.md")
@@ -130,7 +134,7 @@ func TestLinkedDirectoryIsMountedWhereTheLinkIs(t *testing.T) {
 
 	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
 
-	mount := mustMount(t, report, "/home/caged/.claude/agents")
+	mount := mustMount(t, report, "/home/caged/dotfiles/claude/agents")
 	if mount.HostPath != filepath.Join(resolved, "dotfiles/claude/agents") || mount.Link != filepath.Join(resolved, ".claude/agents") || !mount.Writable {
 		t.Fatalf("mount = %+v", mount)
 	}
@@ -149,15 +153,15 @@ func TestSymlinkedConfigRootIsFollowedWhenAllowed(t *testing.T) {
 	if mount.HostPath != filepath.Join(resolved, "dotfiles/pi/.pi") || mount.Link != filepath.Join(home, ".pi") || !mount.Writable {
 		t.Fatalf("mount = %+v", mount)
 	}
-	if len(mount.MaskPaths) != 1 || mount.MaskPaths[0] != "agent/extensions-link" {
-		t.Fatalf("Pi tree directory masks = %v, want the nested symlink masked", mount.MaskPaths)
+	// Both links resolve inside the tree, in the container as on the host, so
+	// the tree is mounted live: no copy, no masks and no mounts of their own.
+	if mount.Staged || len(mount.MaskPaths) != 0 || len(mount.MaskFiles) != 0 {
+		t.Fatalf("Pi tree = %+v, want a live mount without masks", mount)
 	}
-	if len(mount.MaskFiles) != 1 || mount.MaskFiles[0] != "agent/settings-link.json" {
-		t.Fatalf("Pi tree file masks = %v, want the file symlink masked", mount.MaskFiles)
-	}
-	linkMount := mustMount(t, report, "/home/caged/.pi/agent/extensions-link")
-	if linkMount.HostPath != filepath.Join(resolved, "dotfiles/pi/.pi/agent/extensions-target") {
-		t.Fatalf("Pi link target mount = %+v", linkMount)
+	for _, m := range report.Mounts {
+		if m.Agent == "pi" && m.DestPath != "/home/caged/.pi" {
+			t.Fatalf("unexpected Pi mount %+v", m)
+		}
 	}
 
 	report = resolveConfigs(t, home, nil)
@@ -168,6 +172,49 @@ func TestSymlinkedConfigRootIsFollowedWhenAllowed(t *testing.T) {
 	if !strings.HasPrefix(refusal.Hint, wantHintPrefix) || !strings.Contains(refusal.Hint, "~/dotfiles/pi/.pi") {
 		t.Fatalf("Hint = %q", refusal.Hint)
 	}
+}
+
+// TestPiTreeFallsBackToACopyForALinkTheContainerCannotFollow: a relative link
+// with a ".." after a name resolves on the host, but caged does not follow it
+// in the container, so Pi runs from a staged copy, with the link hidden and
+// its target mounted at the link's path.
+func TestPiTreeFallsBackToACopyForALinkTheContainerCannotFollow(t *testing.T) {
+	t.Parallel()
+	home, resolved := testHome(t, nil, nil)
+	writeFiles(t, home, "dotfiles/pi/.pi/agent/settings.json", "dotfiles/ext/index.js")
+	symlink(t, home, ".pi", "dotfiles/pi/.pi")
+	symlink(t, home, "dotfiles/pi/.pi/agent/extensions", "../../../ext/../ext")
+
+	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
+
+	root := mustMount(t, report, "/home/caged/.pi")
+	if !root.Staged || !slices.Equal(root.MaskPaths, []string{"agent/extensions"}) {
+		t.Fatalf("Pi tree = %+v, want a staged copy with the link masked", root)
+	}
+	ext := mustMount(t, report, "/home/caged/.pi/agent/extensions")
+	if !ext.Staged || ext.HostPath != filepath.Join(resolved, "dotfiles/ext") {
+		t.Fatalf("link target mount = %+v", ext)
+	}
+	if len(report.Refused) != 0 {
+		t.Fatalf("Refused = %v; the live attempt's refusal must be undone", refusedStrings(report.Refused))
+	}
+}
+
+// TestPiTreeStaysLiveWhenTheUnfollowableLinkIsRefusedAnyway: a copy would not
+// help a link whose target the policy refuses, so the tree stays live.
+func TestPiTreeStaysLiveWhenTheUnfollowableLinkIsRefusedAnyway(t *testing.T) {
+	t.Parallel()
+	home, resolved := testHome(t, nil, nil)
+	writeFiles(t, home, "dotfiles/pi/.pi/agent/settings.json", "private/ext/index.js")
+	symlink(t, home, ".pi", "dotfiles/pi/.pi")
+	symlink(t, home, "dotfiles/pi/.pi/agent/extensions", "../../../../private/ext")
+
+	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
+
+	if root := mustMount(t, report, "/home/caged/.pi"); root.Staged {
+		t.Fatalf("Pi tree = %+v, want it live", root)
+	}
+	mustRefuse(t, report, filepath.Join(resolved, "dotfiles/pi/.pi/agent/extensions"))
 }
 
 func TestPiTreeFollowsLinksAddedAfterAnEarlierResolve(t *testing.T) {
@@ -191,19 +238,16 @@ func TestPiTreeFollowsLinksAddedAfterAnEarlierResolve(t *testing.T) {
 
 	second := resolveConfigsWith(t, home, nil, policies{allow: allow})
 	root := mustMount(t, second, "/home/caged/.pi")
-	if !slices.Contains(root.MaskFiles, "agent/future-settings.json") || !slices.Contains(root.MaskFiles, "agent/future-secret") {
-		t.Fatalf("new file symlinks were not masked from the parent tree: %v", root.MaskFiles)
+	if root.Staged || len(root.MaskPaths) != 0 || len(root.MaskFiles) != 0 {
+		t.Fatalf("Pi tree = %+v, want it live with its links visible", root)
 	}
-	if !slices.Contains(root.MaskPaths, "agent/future-extensions") {
-		t.Fatalf("new directory symlink was not masked from the parent tree: %v", root.MaskPaths)
-	}
-	if mount := mustMount(t, second, "/home/caged/.pi/agent/future-settings.json"); mount.HostPath != filepath.Join(resolved, "dotfiles/pi/agent/future-settings.json") {
+	if mount := mustMount(t, second, "/home/caged/dotfiles/pi/agent/future-settings.json"); mount.HostPath != filepath.Join(resolved, "dotfiles/pi/agent/future-settings.json") {
 		t.Fatalf("new file link mount = %+v", mount)
 	}
-	if mount := mustMount(t, second, "/home/caged/.pi/agent/future-extensions"); mount.HostPath != filepath.Join(resolved, "dotfiles/pi/agent/future-extensions") {
+	if mount := mustMount(t, second, "/home/caged/dotfiles/pi/agent/future-extensions"); mount.HostPath != filepath.Join(resolved, "dotfiles/pi/agent/future-extensions") {
 		t.Fatalf("new directory link mount = %+v", mount)
 	}
-	if _, ok := mountAt(second, "/home/caged/.pi/agent/future-secret"); ok {
+	if _, ok := mountAt(second, "/home/caged/.ssh/id_e2e"); ok {
 		t.Fatal("a newly added link to a denied target was mounted")
 	}
 	if refusal := mustRefuse(t, second, filepath.Join(resolved, ".pi/agent/future-secret")); !strings.Contains(refusal.Hint, "built-in deny list") {
@@ -220,10 +264,10 @@ func TestLinkInsideLinkedDirectoryIsFollowed(t *testing.T) {
 
 	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles"), filepath.Join(home, "dotfiles2")}})
 
-	if mount := mustMount(t, report, "/home/caged/.claude/agents/a.md"); mount.HostPath != filepath.Join(resolved, "dotfiles/claude/agents/a.md") {
+	if mount := mustMount(t, report, "/home/caged/dotfiles/claude/agents"); mount.HostPath != filepath.Join(resolved, "dotfiles/claude/agents") {
 		t.Fatalf("mount = %+v", mount)
 	}
-	mount := mustMount(t, report, "/home/caged/.claude/agents/shared.md")
+	mount := mustMount(t, report, "/home/caged/dotfiles2/shared.md")
 	if mount.HostPath != filepath.Join(resolved, "dotfiles2/shared.md") {
 		t.Fatalf("mount = %+v", mount)
 	}
@@ -240,13 +284,10 @@ func TestLinkInsideItsOwnConfigFolderNeedsNoPolicy(t *testing.T) {
 
 	report := resolveConfigs(t, home, nil)
 
-	mount := mustMount(t, report, "/home/caged/.gemini/current-settings.json")
-	if mount.HostPath != filepath.Join(resolved, ".gemini/settings.json") || mount.Link != filepath.Join(resolved, ".gemini/current-settings.json") {
-		t.Fatalf("mount = %+v", mount)
-	}
-	mustMount(t, report, "/home/caged/.gemini/settings.json")
-	if len(report.Refused) != 0 {
-		t.Fatalf("Refused = %v, want none", refusedStrings(report.Refused))
+	// The link stays visible in the whole tree and resolves there as it does
+	// on the host, so it needs no mount and no policy.
+	if len(report.Mounts) != 1 || report.Mounts[0].HostPath != filepath.Join(resolved, ".gemini") || len(report.Refused) != 0 {
+		t.Fatalf("Mounts = %+v, Refused = %v; want only the ~/.gemini tree", report.Mounts, refusedStrings(report.Refused))
 	}
 }
 
@@ -263,7 +304,10 @@ func TestDanglingLinkIsRefused(t *testing.T) {
 	}
 }
 
-func TestLinkToItsOwnDirectoryIsRefused(t *testing.T) {
+// TestLinkToItsOwnDirectoryIsLeftAsItIs: a link inside a whole tree that
+// points back at the tree resolves in the container as on the host and is
+// never followed, so it needs no mount and no refusal.
+func TestLinkToItsOwnDirectoryIsLeftAsItIs(t *testing.T) {
 	t.Parallel()
 	home, resolved := testHome(t, nil, nil)
 	writeFiles(t, home, ".claude/settings.json")
@@ -271,7 +315,24 @@ func TestLinkToItsOwnDirectoryIsRefused(t *testing.T) {
 
 	report := resolveConfigs(t, home, nil)
 
-	if refusal := mustRefuse(t, report, filepath.Join(resolved, ".claude/loop")); refusal.Reason != "symlink points to a directory that contains it" {
+	if len(report.Mounts) != 1 || report.Mounts[0].HostPath != filepath.Join(resolved, ".claude") || len(report.Refused) != 0 {
+		t.Fatalf("Mounts = %+v, Refused = %v; want only the ~/.claude tree", report.Mounts, refusedStrings(report.Refused))
+	}
+}
+
+// TestLinkFromALinkedDirectoryToItsParentIsRefused: a followed directory link
+// whose target holds the link would be mounted inside itself.
+func TestLinkFromALinkedDirectoryToItsParentIsRefused(t *testing.T) {
+	t.Parallel()
+	home, resolved := testHome(t, nil, nil)
+	writeFiles(t, home, ".claude/settings.json", "dotfiles/claude/a.md")
+	symlink(t, home, ".claude/dot", "../dotfiles/claude")
+	symlink(t, home, "dotfiles/claude/up", "..")
+
+	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
+
+	mustMount(t, report, "/home/caged/dotfiles/claude")
+	if refusal := mustRefuse(t, report, filepath.Join(resolved, "dotfiles/claude/up")); refusal.Reason != "symlink points to a directory that contains it" {
 		t.Fatalf("Reason = %q", refusal.Reason)
 	}
 }
@@ -288,7 +349,7 @@ func TestBuiltinDenyListBeatsAnAllowedRoot(t *testing.T) {
 	if !strings.Contains(refusal.Hint, "built-in deny list") {
 		t.Fatalf("Hint = %q", refusal.Hint)
 	}
-	if _, ok := mountAt(report, "/home/caged/.claude/key"); ok {
+	if _, ok := mountAt(report, "/home/caged/.ssh/id"); ok {
 		t.Fatal("a link to ~/.ssh was mounted")
 	}
 }
@@ -306,7 +367,7 @@ func TestLinkToADirectoryThatContainsADeniedPathIsRefused(t *testing.T) {
 	if !strings.Contains(refusal.Hint, "built-in deny list") || !strings.Contains(refusal.Reason, "is denied") {
 		t.Fatalf("refusal = %+v", refusal)
 	}
-	if _, ok := mountAt(report, "/home/caged/.claude/all"); ok {
+	if _, ok := mountAt(report, "/home/caged/dotfiles"); ok {
 		t.Fatal("a link to a directory containing ~/.ssh was mounted")
 	}
 }
@@ -319,7 +380,7 @@ func TestReadOnlyRootMountsLinksReadOnly(t *testing.T) {
 
 	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}, readOnly: true})
 
-	if mount := mustMount(t, report, "/home/caged/.claude/CLAUDE.md"); mount.Writable {
+	if mount := mustMount(t, report, "/home/caged/dotfiles/claude/CLAUDE.md"); mount.Writable {
 		t.Fatalf("mount through a read_only root is writable: %+v", mount)
 	}
 }
@@ -334,8 +395,8 @@ func TestMoreThanSixtyFourLinksAreNotFollowed(t *testing.T) {
 
 	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
 
-	if len(report.Mounts) != 64 {
-		t.Fatalf("got %d mounts, want 64", len(report.Mounts))
+	if len(report.Mounts) != 1+64 {
+		t.Fatalf("got %d mounts, want the tree and 64 links", len(report.Mounts))
 	}
 	var over []plan.Refusal
 	for _, refusal := range report.Refused {
@@ -364,8 +425,8 @@ func TestNestedSymlinkedDirectoriesStopAtDepthEight(t *testing.T) {
 	if got := refusedStrings(report.Refused); !slices.Equal(got, want) {
 		t.Fatalf("Refused = %v, want %v", got, want)
 	}
-	mustMount(t, report, "/home/caged/.claude/next/next/next/next/next/next/next/next/f")
-	if _, ok := mountAt(report, "/home/caged/.claude/next/next/next/next/next/next/next/next/next/f"); ok {
+	mustMount(t, report, "/home/caged/dotfiles/d8")
+	if _, ok := mountAt(report, "/home/caged/dotfiles/d9"); ok {
 		t.Fatal("a ninth nested symlinked directory was mounted")
 	}
 }
@@ -387,7 +448,7 @@ func TestLinkToASpecialFileIsRefused(t *testing.T) {
 	if refusal := mustRefuse(t, report, filepath.Join(resolved, ".claude/pipe")); refusal.Reason != "symlink target is not a regular file or directory" {
 		t.Fatalf("Reason = %q", refusal.Reason)
 	}
-	if _, ok := mountAt(report, "/home/caged/.claude/pipe"); ok {
+	if _, ok := mountAt(report, "/home/caged/dotfiles/pipe"); ok {
 		t.Fatal("a link to a FIFO was mounted")
 	}
 }

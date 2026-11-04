@@ -69,11 +69,13 @@ code from `cmd/caged/main.go` to `docker run`.
      after the `/`, home and `workdirs.allow` checks.
    - `Planner.configMounts` -> `hostconfig.Resolver.Resolve(home)`: for every
      agent's `ConfigPath`, `resolution.agentPath` resolves and checks the root
-     (`resolveRoot`, `checkRoot`). Codex's `~/.codex` has `MaskPaths`, so it is
-     checked by `validateMaskedConfigTree`, mounted whole with tmpfs masks
-     (`addMount`), and each link out of it is followed by `followMaskedLink`.
-     Other trees go through `mountTree` (split trees, `followLink`), and Pi's
-     through `mountStagedTree`. Then `sharedFile` adds `~/.gitconfig`
+     (`resolveRoot`, `checkRoot`). Every tree is mounted whole and live by
+     `mountWholeTree` (Codex's with its `MaskPaths` as tmpfs masks), and each
+     of its links by `wholeTreeLink`, which mounts the target where the link
+     points in the container (`followLink`). Pi's trees are `Staged`:
+     `tryWholeTree` mounts them the same way unless a link cannot be followed
+     in the container, and then undoes that and mounts them through
+     `mountStagedTree`. Then `sharedFile` adds `~/.gitconfig`
      read-only, `cagedDir` adds caged's own config folder, and
      `dropNestedLinkMounts` refuses link mounts inside other mounts (staged
      mounts are left to configstage, which nests them inside its copy).
@@ -102,13 +104,18 @@ code from `cmd/caged/main.go` to `docker run`.
 
 ## Pi staging
 
-Pi's config folders (`~/.pi`, `~/.config/pi`) are `Staged`. Stow-managed
-folders hold symlinks, and their targets have to be mounted inside the
-folder's own mount. Docker resolves a nested mount destination through any
-symlink inside the parent bind mount, so mounting those targets, or masks,
-directly into the real folder could escape it. A staged tree that needs masks
-or nested mounts therefore runs from a symlink-free copy; one that needs
-neither is mounted as it is. `hostconfig` describes the staged mount
+Pi's config folders (`~/.pi`, `~/.config/pi`) are `Staged`. Like every config
+tree they are mounted whole and live when they can be (see "Symlinks" below).
+A link the container cannot follow, such as a relative link that climbs out of
+a root-linked tree and so points outside the container home, would need its
+target mounted inside the folder's own mount at the link's path. (Such a
+link is the only reason a Pi tree falls back today.) Docker
+resolves a nested mount destination through any symlink inside the parent
+bind mount, so mounting that target, or masks, directly into the real folder
+could escape it. Such a staged tree therefore runs from a symlink-free copy
+(only when the link's target would be accepted; a refused link changes
+nothing). A copied tree's changes reach the host only when the container
+exits. `hostconfig` describes the staged mount
 (`mountStagedTree`: its directory and file masks and its nested link mounts);
 `configstage` makes and writes back the copy:
 
@@ -137,9 +144,11 @@ seam a future long-lived session would use.
 
 Existing agent configs mount read-write so settings and login changes persist.
 The shared `.gitconfig` mount is read-only. Missing config paths are skipped.
-Special files (sockets, FIFOs, devices) are never mounted: a split tree leaves
-them out and refuses only them, a staged (Pi) tree masks them, and a Codex home
-with one outside its masks is refused whole. `--no-config` disables these mounts.
+Special files (sockets, FIFOs, devices) present when caged resolves the
+config are not exposed: a whole tree hides each under the empty mask file,
+and a copied (Pi) tree leaves them out; both report them as refused. One the
+container or the host creates during the run is not hidden. An entry that cannot be inspected is hidden the same
+way, and a directory that cannot be listed under a tmpfs. `--no-config` disables these mounts.
 
 Caged's own config folder (`userconfig.Store.Dir`) is mounted read-write at
 `/home/caged/.config/caged` by `hostconfig.Resolver` (field `Deps.ConfigDirs`), so
@@ -186,21 +195,39 @@ not be inside or hold a built-in deny root (an override such as
 `CLAUDE_CONFIG_DIR=~/.ssh`); `links.deny` judges links only. Where a mount goes
 depends on how the config is mounted:
 
-- **Split trees.** A directory that holds symlinks is not mounted whole. Its
-  symlink-free subtrees are mounted directly, and each symlink's target is
-  mounted at the logical path of the link (`~/.claude/CLAUDE.md` becomes a
-  mount of the target at `/home/caged/.claude/CLAUDE.md`). A config root that
-  is itself a symlink is mounted at the root's own container path.
-- **Whole trees** (Codex, whose runtime directories are masked with tmpfs). The
-  directory is mounted whole, so its symlinks are visible in the container and
-  resolve there. Each link that leaves the tree is followed by mounting its
-  target where the link points inside the container, computed by
-  `containerLinkDest`: a relative link must stay below `/home/caged` and climb
-  with `..` only at its start; an absolute link must lie in the host home or a
-  `links.allow` root and outside the system directories.
+- **Whole trees** (every agent, and caged's own folder). The directory is
+  mounted whole and live, so the agent can create files as well as edit
+  them, and its symlinks are visible in the container and resolve there. A
+  link that resolves inside the tree in the container as it does on the host
+  needs nothing. The target of any other link is mounted where the link
+  points inside the container, computed by `containerLinkDest`: a relative
+  link must climb with `..` only at its start; an absolute link must lie in
+  the host home or a `links.allow` root; and neither may land inside or above
+  a reserved path (the system directories, `/workspace`, and `/home/caged`
+  itself, below which a relative link may still point). An absolute link
+  into its own tree has that part of the tree mounted again at the host
+  path, without the tree's masks, so `followLink` refuses any target inside
+  or holding a path an agent's `MaskPaths` hide (`resolution.masked`,
+  compared with `Policy.Overlap`, which folds case on macOS). Masks reach
+  docker as `--mount` values with quoted CSV fields (`docker.mountSpec`), so
+  an entry named with `:` or `,` is hidden like any other. Docker trims white
+  space from the end of a `--mount` value (and refuses it before another
+  field), and its CSV reader turns `\r\n` into `\n`, so a mask whose name
+  ends in white space or holds `\r` would land on another entry or fail the
+  run: `hideUnsafeMasks` hides its nearest parent that docker reads
+  correctly, or refuses the tree when there is none. These refusals carry
+  `plan.Refusal.Warn`, which the planner prints on every run. A link that cannot be followed that way is
+  refused (a policy refusal is reported first, as it gives the hint).
+- **Copied trees** (Pi's fallback, above). Links are hidden and each target is
+  mounted at the logical path of the link inside the copy.
 
 A symlink mount whose container path lies inside another mount is refused
-(Docker would create the mount point inside that host directory). At most 64
+(Docker would create the mount point inside that host directory), and so is
+one at another mount's container path (Docker refuses duplicate mount points)
+or above one (that mount's mount point would be created in the link target).
+Pi's live attempt falls back to a copy only for problems found while its tree
+is walked; these collisions are found afterwards, so they only refuse the
+link. At most 64
 symlinks are followed, and symlinked directories nest at most 8 deep.
 
 Known limits: the deny list does not apply to files directly inside an agent
@@ -223,7 +250,7 @@ internal/engine/      facts and errors that flow up: Kind, Error, DaemonInfo, Im
 internal/agent/       Agent definition, Registry, one file per built-in agent
 internal/project/     project directory validation -> plan.Mount
 internal/hostconfig/  host config discovery and safety policy -> plan.ConfigReport
-internal/configstage/ runs staged config mounts (Pi) from symlink-free copies, writes changes back
+internal/configstage/ runs Pi's copied config mounts from symlink-free copies, writes changes back
 internal/docker/      Docker CLI adapter: RunSpec/BuildSpec -> docker commands
 internal/images/      the runtime image: tag + embedded Dockerfile and entrypoint
 internal/system/      thin OS adapters: FS, Env, Executor, Platform, Stdio

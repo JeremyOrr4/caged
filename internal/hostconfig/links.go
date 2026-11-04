@@ -17,29 +17,11 @@ func (r *resolution) followLink(o owner, treeRoot, link, dest string, depth int)
 		return
 	}
 	r.linksFollowed++
-	target, err := r.fs.EvalSymlinks(link)
-	if err != nil {
-		r.refuse(link, "dangling or unresolvable symlink")
+	target, isDir, ok := r.linkTarget(&o, treeRoot, link)
+	if !ok {
 		return
 	}
-	info, err := r.fs.Stat(target)
-	if err != nil {
-		r.refuse(link, "cannot inspect symlink target")
-		return
-	}
-	if !info.IsDir() && !info.Mode().IsRegular() {
-		r.refuse(link, "symlink target is not a regular file or directory")
-		return
-	}
-	if !pathpolicy.Within(target, treeRoot) {
-		decision := o.policy.Check(target)
-		if decision.Verdict != pathpolicy.Allowed {
-			r.refuseLink(link, target, decision)
-			return
-		}
-		o.writable = o.writable && !decision.Root.ReadOnly
-	}
-	if !info.IsDir() {
+	if !isDir {
 		r.addMount(o, target, dest, nil, nil, link)
 		return
 	}
@@ -54,26 +36,38 @@ func (r *resolution) followLink(o owner, treeRoot, link, dest string, depth int)
 	r.mountTree(o, target, dest, depth+1, link)
 }
 
-// followMaskedLink handles a symlink that leaves a config tree mounted whole.
-// The link itself is visible in the container, so its target is mounted where
-// the link points inside the container.
-func (r *resolution) followMaskedLink(o owner, treeRoot, link, treeDest string) {
-	text, err := r.fs.Readlink(link)
+// linkTarget resolves link and checks its target: a regular file or
+// directory, allowed by the link policy when outside treeRoot (a read_only
+// root makes o read-only), and clear of every config mask. It refuses link
+// and reports false when the target fails a check.
+func (r *resolution) linkTarget(o *owner, treeRoot, link string) (target string, isDir, ok bool) {
+	target, err := r.fs.EvalSymlinks(link)
 	if err != nil {
-		r.refuse(link, "cannot read symlink")
-		return
+		r.refuse(link, "dangling or unresolvable symlink")
+		return "", false, false
 	}
-	linkDest, ok := r.below(treeRoot, link, treeDest)
-	if !ok {
-		return
+	info, err := r.fs.Stat(target)
+	if err != nil {
+		r.refuse(link, "cannot inspect symlink target")
+		return "", false, false
 	}
-	roots := append([]string{r.home, r.resolvedHome}, r.policy.AllowPaths()...)
-	dest, ok := containerLinkDest(linkDest, text, roots)
-	if !ok {
-		r.refuse(link, fmt.Sprintf("symlink to %s cannot be followed inside the container", text))
-		return
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		r.refuse(link, "symlink target is not a regular file or directory")
+		return "", false, false
 	}
-	r.followLink(o, treeRoot, link, dest, 0)
+	if !pathpolicy.Within(target, treeRoot) {
+		decision := o.policy.Check(target)
+		if decision.Verdict != pathpolicy.Allowed {
+			r.refuseLink(link, target, decision)
+			return "", false, false
+		}
+		o.writable = o.writable && !decision.Root.ReadOnly
+	}
+	if r.touchesMask(target) {
+		r.report.Refused = appendUnique(r.report.Refused, plan.Refusal{Path: link, Reason: "symlink target is, holds or sits inside a folder caged hides from agents (" + pathpolicy.Tilde(r.resolvedHome, target) + ")", Hint: "point the link elsewhere; Codex's runtime folders are never mounted"})
+		return "", false, false
+	}
+	return target, info.IsDir(), true
 }
 
 // refuseLink records a symlink whose target the policy refused, with the hint

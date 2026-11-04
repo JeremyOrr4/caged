@@ -193,18 +193,21 @@ func TestResolveReportsUninspectableEntries(t *testing.T) {
 		filepath.Join(gemini, "b.json") + " (cannot inspect config entry safely)",
 		filepath.Join(gemini, "sub") + " (cannot inspect config entry safely)",
 	}
-	// The link points inside the config directory, so it is followed without a policy.
+	// The tree is mounted whole with both entries hidden; the link points
+	// inside it, so it needs no mount of its own.
 	wantMounts := []plan.ConfigMount{{
-		Agent: "gemini", Name: ".gemini", HostPath: filepath.Join(gemini, "b.json"), DestPath: "/home/caged/.gemini/link",
-		Root: filepath.Join(home, ".gemini"), Writable: true, Link: filepath.Join(gemini, "link"),
+		Agent: "gemini", Name: ".gemini", HostPath: gemini, DestPath: "/home/caged/.gemini",
+		Root: filepath.Join(home, ".gemini"), Writable: true, MaskPaths: []string{"sub"}, MaskFiles: []string{"b.json"},
 	}}
 	if !reflect.DeepEqual(refusedStrings(report.Refused), wantRefused) || !reflect.DeepEqual(report.Mounts, wantMounts) {
 		t.Fatalf("Resolve() = %+v, want refused %v and mounts %+v", report, wantRefused, wantMounts)
 	}
 
 	root := filepath.Join(resolvedHome, ".gh")
-	if mounts, links, refused := collectSafeMounts(faultyFS{lstatErr: map[string]bool{root: true}}, root); mounts != nil || links != nil || !reflect.DeepEqual(refusedStrings(refused), []string{root + " (cannot inspect config root safely)"}) {
-		t.Fatalf("collectSafeMounts() = %v, %v, %v", mounts, links, refused)
+	pass := &resolution{fs: faultyFS{lstatErr: map[string]bool{root: true}}, seen: map[string]struct{}{}}
+	pass.mountWholeTree(owner{}, root, "/home/caged/.gh", 0, "", nil)
+	if pass.report.Mounts != nil || !reflect.DeepEqual(refusedStrings(pass.report.Refused), []string{root + " (cannot inspect config root safely)"}) {
+		t.Fatalf("mountWholeTree() = %+v", pass.report)
 	}
 }
 
