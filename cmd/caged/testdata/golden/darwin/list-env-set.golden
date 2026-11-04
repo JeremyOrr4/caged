@@ -3,13 +3,13 @@ exit code: 0
 error: <nil>
 leftover temp entries: 0
 === stdout
-AGENT    CONFIG               AUTH ENV SET
-claude   ~/.claude            ANTHROPIC_API_KEY
-codex    ~/.codex             ANTHROPIC_API_KEY
-copilot  ~/.copilot           GH_TOKEN
-gemini   ~/.gemini (3 files)  -
-gh       ~/.config/gh         GH_TOKEN
-pi       ~/.pi                ANTHROPIC_API_KEY
+AGENT    CONFIG        AUTH ENV SET
+claude   ~/.claude     ANTHROPIC_API_KEY
+codex    ~/.codex      ANTHROPIC_API_KEY
+copilot  ~/.copilot    GH_TOKEN
+gemini   ~/.gemini     -
+gh       ~/.config/gh  GH_TOKEN
+pi       ~/.pi         ANTHROPIC_API_KEY
 === stderr
 caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 === docker invocations

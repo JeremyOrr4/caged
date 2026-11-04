@@ -2,6 +2,7 @@ package docker
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -281,8 +282,8 @@ func TestRunArgsMaskSymlinksBeforeMountingTheirTargets(t *testing.T) {
 	args := runArgs(options, system.Platform{OS: "linux"}, "/tmp/empty-mask")
 	want := []string{
 		"-v", "/host/.pi:/home/caged/.pi",
-		"--tmpfs", "/home/caged/.pi/agent/extensions-link",
-		"-v", "/tmp/empty-mask:/home/caged/.pi/agent/settings.json:ro",
+		"--mount", "type=tmpfs,destination=/home/caged/.pi/agent/extensions-link",
+		"--mount", "type=bind,source=/tmp/empty-mask,destination=/home/caged/.pi/agent/settings.json,readonly",
 		"-v", "/host/target:/home/caged/.pi/agent/extensions-link",
 	}
 	last := -1
@@ -310,7 +311,7 @@ func TestRunArgsMaskCodexRuntimeDirectories(t *testing.T) {
 		MaskPaths: []string{"app-server-control", "ipc"},
 	}}}
 	args := runArgs(options, system.Platform{OS: "darwin"}, "")
-	want := []string{"--tmpfs", "/home/caged/.codex/app-server-control", "--tmpfs", "/home/caged/.codex/ipc"}
+	want := []string{"--mount", "type=tmpfs,destination=/home/caged/.codex/app-server-control", "--mount", "type=tmpfs,destination=/home/caged/.codex/ipc"}
 	for i := 0; i < len(want); i += 2 {
 		found := false
 		for j := 0; j+1 < len(args); j++ {
@@ -344,8 +345,8 @@ func TestRunArgsFullOrder(t *testing.T) {
 		"-p", "127.0.0.1:8080:3000", "-p", "127.0.0.1:5173:5173",
 		"-v", "/p:/workspace/p", "-w", "/workspace/p",
 		"-v", "/h/.pi:/home/caged/.pi/",
-		"--tmpfs", "/home/caged/.pi/cache", "--tmpfs", "/home/caged/.pi/abs",
-		"-v", "MASK:/home/caged/.pi/agent/s.json:ro", "-v", "MASK:/home/caged/.pi/sock:ro",
+		"--mount", "type=tmpfs,destination=/home/caged/.pi/cache", "--mount", "type=tmpfs,destination=/home/caged/.pi/abs",
+		"--mount", "type=bind,source=MASK,destination=/home/caged/.pi/agent/s.json,readonly", "--mount", "type=bind,source=MASK,destination=/home/caged/.pi/sock,readonly",
 		"-v", "/h/.gitconfig:/home/caged/.gitconfig:ro",
 	}
 	tail := []string{"-e", "A", "-e", "B", "-e", "CAGED_RETURN_TO_SHELL=1", "img", "claude", "-p", "x"}
@@ -375,5 +376,24 @@ func TestRunArgsFullOrder(t *testing.T) {
 				t.Fatalf("runArgs() =\n%q\nwant\n%q", got, want)
 			}
 		})
+	}
+}
+
+// TestMaskNamesWithDockerSeparatorsAreQuoted: masks are named by the config
+// tree's entries, which a container can choose. With --mount they reach
+// docker as quoted CSV fields, so a ":" or "," in a name stays part of it.
+func TestMaskNamesWithDockerSeparatorsAreQuoted(t *testing.T) {
+	t.Parallel()
+	mount := plan.ConfigMount{HostPath: "/h/.claude", DestPath: "/home/caged/.claude", Writable: true, MaskPaths: []string{"d:size=1k", "e,f"}, MaskFiles: []string{"p:exec", "q\"r"}}
+	got := configMountArgs(mount, "/tmp/m/empty-file")
+	want := []string{
+		"-v", "/h/.claude:/home/caged/.claude",
+		"--mount", "type=tmpfs,destination=/home/caged/.claude/d:size=1k",
+		"--mount", `type=tmpfs,"destination=/home/caged/.claude/e,f"`,
+		"--mount", "type=bind,source=/tmp/m/empty-file,destination=/home/caged/.claude/p:exec,readonly",
+		"--mount", `type=bind,source=/tmp/m/empty-file,"destination=/home/caged/.claude/q""r",readonly`,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("configMountArgs() =\n%q\nwant\n%q", got, want)
 	}
 }

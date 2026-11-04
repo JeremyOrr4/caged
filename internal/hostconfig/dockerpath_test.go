@@ -21,28 +21,31 @@ func TestMountPathsWithAColonAreRefused(t *testing.T) {
 
 	home := realHome(t)
 	writeFiles(t, home, ".claude/settings.json", "dotfiles/f.md", "dotfiles/a:b/x.md", ".claude/sub:x/y.json", "dotfiles/c,d\"e\nf/g.md")
-	symlink(t, home, ".claude/x:ro", filepath.Join(home, "dotfiles", "f.md"))     // container path holds ":"
-	symlink(t, home, ".claude/ab", filepath.Join(home, "dotfiles", "a:b"))        // host path holds ":"
-	symlink(t, home, ".claude/odd", filepath.Join(home, "dotfiles", "c,d\"e\nf")) // mounted as it is
+	symlink(t, home, ".claude/x:ro", "../dotfiles/f.md")     // the link's name holds ":"
+	symlink(t, home, ".claude/ab", "../dotfiles/a:b")        // host path holds ":"
+	symlink(t, home, ".claude/odd", "../dotfiles/c,d\"e\nf") // mounted as it is
 
 	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
 
+	// ~/.claude is mounted whole, so x:ro and sub:x are entries inside the
+	// mount and reach docker only as part of it; the target with a colon is
+	// mounted on its own and is refused.
 	const reason = `path contains ":", which docker cannot mount`
-	for _, path := range []string{
-		filepath.Join(home, ".claude", "x:ro"),
-		filepath.Join(home, "dotfiles", "a:b"),
-		filepath.Join(home, ".claude", "sub:x"),
-	} {
-		if refusal, ok := refusalAt(report, path); !ok || refusal != (plan.Refusal{Path: path, Reason: reason}) {
-			t.Errorf("refusal for %s = %+v, %v; want %q", path, refusal, ok, reason)
-		}
+	path := filepath.Join(home, "dotfiles", "a:b")
+	if refusal, ok := refusalAt(report, path); !ok || refusal != (plan.Refusal{Path: path, Reason: reason}) {
+		t.Errorf("refusal for %s = %+v, %v; want %q", path, refusal, ok, reason)
+	}
+	if len(report.Refused) != 1 {
+		t.Errorf("Refused = %v, want only %s", refusedStrings(report.Refused), path)
 	}
 	for _, mount := range report.Mounts {
 		if strings.Contains(mount.HostPath, ":") || strings.Contains(mount.DestPath, ":") {
 			t.Errorf("mount %+v holds a colon", mount)
 		}
 	}
-	if mount, ok := mountAt(report, "/home/caged/.claude/odd"); !ok || mount.HostPath != filepath.Join(home, "dotfiles", "c,d\"e\nf") {
+	mustMount(t, report, "/home/caged/.claude")
+	mustMount(t, report, "/home/caged/dotfiles/f.md")
+	if mount, ok := mountAt(report, "/home/caged/dotfiles/c,d\"e\nf"); !ok || mount.HostPath != filepath.Join(home, "dotfiles", "c,d\"e\nf") {
 		t.Errorf("mount = %+v, %v; want the comma, quote and newline path mounted", mount, ok)
 	}
 }

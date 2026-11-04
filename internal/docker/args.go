@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"encoding/csv"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -43,7 +44,9 @@ func runArgs(spec plan.RunSpec, platform system.Platform, fileMaskSource string)
 
 // configMountArgs mounts one config mount and then hides its masks inside
 // it: directories under a tmpfs, files under a read-only bind of
-// fileMaskSource. Docker orders mounts by destination depth itself; the
+// fileMaskSource. Masks are named by the config tree's own entries, so they
+// use --mount, whose CSV fields are quoted (mountSpec), not -v or --tmpfs,
+// which split at ":". Docker orders mounts by destination depth itself; the
 // argument order here is kept only because the golden command lines pin it.
 func configMountArgs(mount plan.ConfigMount, fileMaskSource string) []string {
 	volume := mount.HostPath + ":" + mount.DestPath
@@ -52,12 +55,22 @@ func configMountArgs(mount plan.ConfigMount, fileMaskSource string) []string {
 	}
 	args := []string{"-v", volume}
 	for _, mask := range mount.MaskPaths {
-		args = append(args, "--tmpfs", maskTarget(mount.DestPath, mask))
+		args = append(args, "--mount", mountSpec("type=tmpfs", "destination="+maskTarget(mount.DestPath, mask)))
 	}
 	for _, mask := range mount.MaskFiles {
-		args = append(args, "-v", fileMaskSource+":"+maskTarget(mount.DestPath, mask)+":ro")
+		args = append(args, "--mount", mountSpec("type=bind", "source="+fileMaskSource, "destination="+maskTarget(mount.DestPath, mask), "readonly"))
 	}
 	return args
+}
+
+// mountSpec joins the fields of a --mount value as docker reads it: one CSV
+// record, so a field holding a comma, a quote or a newline is quoted.
+func mountSpec(fields ...string) string {
+	var b strings.Builder
+	w := csv.NewWriter(&b)
+	_ = w.Write(fields) // a strings.Builder does not fail
+	w.Flush()
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // maskTarget is the container path of mask, a path relative to the mount

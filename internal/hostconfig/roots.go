@@ -16,6 +16,8 @@ type resolution struct {
 	resolvedHome  string
 	seen          map[string]struct{} // host path + "\x00" + container path already mounted
 	linksFollowed int
+	needsCopy     int      // problems in whole trees a staged copy would avoid (tryWholeTree)
+	masked        []string // resolved host paths hidden by agent MaskPaths; no link target may touch them
 	report        plan.ConfigReport
 }
 
@@ -24,7 +26,7 @@ type owner struct {
 	agent, name string
 	root        string // the config path before symlink resolution
 	writable    bool
-	staged      bool               // mounted as staged trees (agent.ConfigPath.Staged)
+	staged      bool               // mounted as staged copies: Pi's fallback when a live tree cannot be used
 	policy      *pathpolicy.Policy // decides which symlink targets are followed
 }
 
@@ -39,26 +41,34 @@ func (r *resolution) agentPath(agentName string, configPath agent.ConfigPath, ho
 		r.refuse(hostPath, "config path resolves to the home directory")
 		return
 	}
-	o := owner{agent: agentName, name: filepath.Clean(configPath.HostPath), root: hostPath, writable: configPath.Writable, staged: configPath.Staged, policy: r.policy}
+	o := owner{agent: agentName, name: filepath.Clean(configPath.HostPath), root: hostPath, writable: configPath.Writable, policy: r.policy}
 	via, ok := r.checkRoot(hostPath, resolvedHost, &o)
 	if !ok {
 		return
 	}
 	dest := inContainer(filepath.Clean(configPath.ContainerPath))
-	if len(configPath.MaskPaths) > 0 {
-		// A masked tree is mounted whole; tmpfs mounts hide the masked entries.
-		links, err := validateMaskedConfigTree(r.fs, resolvedHost, configPath.MaskPaths)
-		if err != nil {
+	switch {
+	case len(configPath.MaskPaths) > 0:
+		// tmpfs mounts hide the masked entries of the live tree.
+		if _, err := maskedPaths(resolvedHost, configPath.MaskPaths); err != nil {
 			r.refuse(hostPath, err.Error())
 			return
 		}
-		r.addMount(o, resolvedHost, dest, append([]string(nil), configPath.MaskPaths...), nil, via)
-		for _, link := range links {
-			r.followMaskedLink(o, resolvedHost, link, dest)
+		if info, err := r.fs.Stat(resolvedHost); err != nil || !info.IsDir() {
+			r.refuse(hostPath, "masked config root must be a directory")
+			return
 		}
-		return
+		r.mountWholeTree(o, resolvedHost, dest, 0, via, configPath.MaskPaths)
+	case configPath.Staged:
+		// Live when every link can be followed in the container, otherwise
+		// from a staged copy written back when the container exits.
+		if !r.tryWholeTree(o, resolvedHost, dest, via) {
+			o.staged = true
+			r.mountStagedTree(o, resolvedHost, dest, 0, via)
+		}
+	default:
+		r.mountWholeTree(o, resolvedHost, dest, 0, via, nil)
 	}
-	r.mountTree(o, resolvedHost, dest, 0, via)
 }
 
 // cagedDir records the mount of caged's own config directory, read/write, at

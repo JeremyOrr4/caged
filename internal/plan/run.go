@@ -40,6 +40,9 @@ type Refusal struct {
 	Path, Reason string
 	// Hint is what the user can do about it; may be empty.
 	Hint string
+	// Warn marks a refusal the user must act on, such as a whole config
+	// folder left out: it is shown on every run, not only with --verbose.
+	Warn bool
 }
 
 // String formats the refusal as "path (reason)", followed by "; hint" when

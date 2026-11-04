@@ -44,7 +44,7 @@ func TestRepeatedMissingAndRefusedPathsAreReportedOnce(t *testing.T) {
 	}
 
 	want := "" +
-		"mount one ~/.shared/settings.json -> /home/caged/.shared/settings.json root=~/.shared writable=true staged=false masks=[] files=[] link=\n" +
+		"mount one ~/.shared -> /home/caged/.shared root=~/.shared writable=true staged=false masks=[] files=[] link=\n" +
 		"missing ~/.absent\n" +
 		"refused ~/.shared/private (symlink target ~/private is not under links.allow); add \"- path: ~/private\" under links.allow in ~/.config/caged/config.yaml\n"
 	if got := describeReport(report, home, resolved); got != want {

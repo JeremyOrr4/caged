@@ -58,21 +58,15 @@ func TestResolveSnapshotOfAStowManagedHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "" +
-		"mount claude ~/.claude/nested/deep/n.json -> /home/caged/.claude/nested/deep/n.json root=~/.claude writable=true staged=false masks=[] files=[] link=\n" +
-		"mount claude ~/.claude/run/z.json -> /home/caged/.claude/run/z.json root=~/.claude writable=true staged=false masks=[] files=[] link=\n" +
-		"mount claude ~/.claude/settings.json -> /home/caged/.claude/settings.json root=~/.claude writable=true staged=false masks=[] files=[] link=\n" +
-		"mount claude ~/.claude/sub -> /home/caged/.claude/sub root=~/.claude writable=true staged=false masks=[] files=[] link=\n" +
-		"mount claude ~/dotfiles/claude/CLAUDE.md -> /home/caged/.claude/CLAUDE.md root=~/.claude writable=true staged=false masks=[] files=[] link=~/.claude/CLAUDE.md\n" +
-		"mount claude ~/dotfiles/claude/agents/a.md -> /home/caged/.claude/agents/a.md root=~/.claude writable=true staged=false masks=[] files=[] link=~/.claude/agents\n" +
-		"mount claude ~/dotfiles2/shared.md -> /home/caged/.claude/agents/shared.md root=~/.claude writable=false staged=false masks=[] files=[] link=~/dotfiles/claude/agents/shared.md\n" +
-		"mount claude ~/.claude/settings.json -> /home/caged/.claude/nested/deep/link root=~/.claude writable=true staged=false masks=[] files=[] link=~/.claude/nested/deep/link\n" +
+		"mount claude ~/.claude -> /home/caged/.claude root=~/.claude writable=true staged=false masks=[] files=[run/pipe] link=\n" +
+		"mount claude ~/dotfiles/claude/CLAUDE.md -> /home/caged/dotfiles/claude/CLAUDE.md root=~/.claude writable=true staged=false masks=[] files=[] link=~/.claude/CLAUDE.md\n" +
+		"mount claude ~/dotfiles/claude/agents -> /home/caged/dotfiles/claude/agents root=~/.claude writable=true staged=false masks=[] files=[] link=~/.claude/agents\n" +
+		"mount claude ~/dotfiles2/shared.md -> /home/caged/dotfiles2/shared.md root=~/.claude writable=false staged=false masks=[] files=[] link=~/dotfiles/claude/agents/shared.md\n" +
 		"mount codex ~/.codex -> /home/caged/.codex root=~/.codex writable=true staged=false masks=[app-server-control app-server-daemon ipc packages/app-server-daemon tmp/arg0] files=[] link=\n" +
 		"mount codex ~/dotfiles/codex/AGENTS.md -> /home/caged/dotfiles/codex/AGENTS.md root=~/.codex writable=true staged=false masks=[] files=[] link=~/.codex/AGENTS.md\n" +
 		"mount gemini ~/.gemini -> /home/caged/.gemini root=~/.gemini writable=true staged=false masks=[] files=[] link=\n" +
 		"mount gh ~/.config/gh -> /home/caged/.config/gh root=~/.config/gh writable=true staged=false masks=[] files=[] link=\n" +
-		"mount pi ~/dotfiles/pi/.pi -> /home/caged/.pi root=~/.pi writable=true staged=true masks=[agent/extensions] files=[agent/settings.json] link=~/.pi\n" +
-		"mount pi ~/dotfiles/pi/.pi/agent/extensions-target -> /home/caged/.pi/agent/extensions root=~/.pi writable=true staged=true masks=[] files=[] link=~/dotfiles/pi/.pi/agent/extensions\n" +
-		"mount pi ~/dotfiles/pi/.pi/agent/settings-target.json -> /home/caged/.pi/agent/settings.json root=~/.pi writable=true staged=true masks=[] files=[] link=~/dotfiles/pi/.pi/agent/settings.json\n" +
+		"mount pi ~/dotfiles/pi/.pi -> /home/caged/.pi root=~/.pi writable=true staged=false masks=[] files=[] link=~/.pi\n" +
 		"mount shared ~/.gitconfig -> /home/caged/.gitconfig root=~/.gitconfig writable=false staged=false masks=[] files=[] link=\n" +
 		"mount shared ~/.config/caged -> /home/caged/.config/caged root=~/.config/caged writable=true staged=false masks=[] files=[] link=\n" +
 		"missing ~/.copilot\n" +
@@ -80,7 +74,7 @@ func TestResolveSnapshotOfAStowManagedHome(t *testing.T) {
 		"refused ~/.claude/run/pipe (special files are excluded from config mounts)\n" +
 		"refused ~/.claude/dangling (dangling or unresolvable symlink)\n" +
 		"refused ~/.claude/key (symlink target ~/.ssh/id_x is denied); ~/.ssh is on caged's built-in deny list and cannot be allowed\n" +
-		"refused ~/.codex/abs-link (symlink to ~/dotfiles/codex cannot be followed inside the container)\n" +
+		"refused ~/.codex/abs-link (symlink to ~/dotfiles/codex cannot be followed inside the container); point it at a path under your home or a links.allow root, with any \"..\" at the start\n" +
 		"refused ~/.codex/private (symlink target ~/private is not under links.allow); add \"- path: ~/private\" under links.allow in ~/.config/caged/config.yaml\n"
 	if got := describeReport(report, home, resolvedHome); got != want {
 		t.Fatalf("report:\n%s\nwant:\n%s", got, want)

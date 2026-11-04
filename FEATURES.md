@@ -90,7 +90,6 @@ Last updated **2026-10-16**. Details: [docs/CAGED-GUIDE.md](docs/CAGED-GUIDE.md)
 ## Known issues
 
 - `caged doctor` prints "1 checks failed" instead of "1 check failed" (`internal/app/doctor.go:71`).
-- `caged list` shows a split config root as `(N files)`, which is noisy for a real `~/.claude` (over 100).
 - The minimum Docker Engine version (25.0) is a placeholder that needs checking.
 - Publishing ports on `[::1]` as well depends on a Mac check.
 - Shell completion after a leading `--` lists subcommands.

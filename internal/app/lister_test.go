@@ -58,7 +58,7 @@ func TestListerList(t *testing.T) {
 			want: []AgentStatus{
 				{Name: "claude"},
 				{Name: "codex"},
-				{Name: "gemini", Config: []string{"~/.gemini (2 files)"}},
+				{Name: "gemini", Config: []string{"~/.gemini"}},
 				{Name: "pi"},
 			},
 		},

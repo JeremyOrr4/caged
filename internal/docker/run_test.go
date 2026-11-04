@@ -203,7 +203,7 @@ func TestRunContainerSetupErrors(t *testing.T) {
 		if err := newClient(exec, fsys, linux, system.Stdio{}).RunContainer(context.Background(), masked); err != nil {
 			t.Fatal(err)
 		}
-		if args := strings.Join(exec.commands[0].Args, " "); !strings.Contains(args, "-v /tmp/caged-run-masks-123/empty-file:/home/caged/.x/sock:ro") {
+		if args := strings.Join(exec.commands[0].Args, " "); !strings.Contains(args, "--mount type=bind,source=/tmp/caged-run-masks-123/empty-file,destination=/home/caged/.x/sock,readonly") {
 			t.Fatalf("docker run args = %s, want the mask file mounted", args)
 		}
 		if len(fsys.removed) != 1 || fsys.removed[0] != "/tmp/caged-run-masks-123" {

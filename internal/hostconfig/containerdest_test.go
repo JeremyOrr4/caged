@@ -19,7 +19,11 @@ func TestContainerLinkDest(t *testing.T) {
 	}{
 		{name: "relative link climbing out of the config dir", text: "../dotfiles/a", want: "/home/caged/dotfiles/a", ok: true},
 		{name: "climbing in the middle", text: "a/../b"},
-		{name: "leaving the container home", text: "../../../etc/x"},
+		{name: "climbing into a system directory", text: "../../../etc/x"},
+		{name: "climbing beside the container home", text: "../../shared/a", want: "/home/shared/a", ok: true},
+		{name: "climbing to a new top-level folder", text: "../../../shared/a", want: "/shared/a", ok: true},
+		{name: "climbing to the directory holding the container home", text: "../../.."},
+		{name: "climbing to the root", text: "../../../../.."},
 		{name: "resolving to the container home itself", text: ".."},
 		{name: "absolute system path", text: "/usr/bin/x", roots: []string{"/usr"}},
 		{name: "absolute path inside a root", text: "/Users/me/dot/a", roots: []string{"/Users/me"}, want: "/Users/me/dot/a", ok: true},

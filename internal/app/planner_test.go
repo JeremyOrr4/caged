@@ -130,6 +130,29 @@ func TestPlannerLogsFollowedLinksAndRefusalHints(t *testing.T) {
 	}
 }
 
+// TestPlannerShowsWarningRefusalsWithoutVerbose: a refusal the user must act
+// on (a config folder left out) is printed on every run; others only with
+// --verbose.
+func TestPlannerShowsWarningRefusalsWithoutVerbose(t *testing.T) {
+	t.Parallel()
+
+	env := &testkit.Env{Home: "/Users/dev", WorkDir: "/Users/dev/app"}
+	configs := &fakeConfigs{report: plan.ConfigReport{Refused: []plan.Refusal{
+		{Path: "/Users/dev/.claude/p ", Reason: "its config folder ~/.claude is not mounted", Hint: "rename or remove it", Warn: true},
+		{Path: "/Users/dev/.claude/sock", Reason: "special files are excluded from config mounts"},
+	}}}
+	var stderr strings.Builder
+	if _, err := NewPlanner(env, &fakeProject{}, configs).Plan(Request{NoMount: true}, "img", NewReporter(&stderr, false)); err != nil {
+		t.Fatal(err)
+	}
+	if want := "WARNING: config: refused /Users/dev/.claude/p  (its config folder ~/.claude is not mounted); rename or remove it\n"; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, want it to contain %q", stderr.String(), want)
+	}
+	if strings.Contains(stderr.String(), "sock") {
+		t.Fatalf("stderr = %q; a plain refusal was shown without --verbose", stderr.String())
+	}
+}
+
 func TestPlannerUsesWorkDirFlagWithoutReadingCwd(t *testing.T) {
 	t.Parallel()
 

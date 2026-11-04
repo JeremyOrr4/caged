@@ -7,13 +7,10 @@ fake docker run output
 === stderr
 caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 WARNING: allowlisted agent credentials are available inside the container.
-config: pass $ROOT/home/.claude/.credentials.json -> /home/caged/.claude/.credentials.json
-config: pass $ROOT/home/.claude/settings.json -> /home/caged/.claude/settings.json
+config: pass $ROOT/home/.claude -> /home/caged/.claude
 config: pass $ROOT/home/.codex -> /home/caged/.codex
 config: pass $ROOT/home/.copilot -> /home/caged/.copilot
-config: pass $ROOT/home/.gemini/oauth_creds.json -> /home/caged/.gemini/oauth_creds.json
-config: pass $ROOT/home/.gemini/settings.json -> /home/caged/.gemini/settings.json
-config: pass $ROOT/home/.gemini/settings.json -> /home/caged/.gemini/current-settings.json (via link $ROOT/home/.gemini/current-settings.json)
+config: pass $ROOT/home/.gemini -> /home/caged/.gemini
 config: pass $ROOT/home/.config/gh -> /home/caged/.config/gh
 config: pass $ROOT/home/.pi -> /home/caged/.pi
 config: pass $ROOT/home/.gitconfig -> /home/caged/.gitconfig
@@ -41,29 +38,23 @@ $ROOT/work/project:/workspace/project
 -w
 /workspace/project
 -v
-$ROOT/home/.claude/.credentials.json:/home/caged/.claude/.credentials.json
--v
-$ROOT/home/.claude/settings.json:/home/caged/.claude/settings.json
+$ROOT/home/.claude:/home/caged/.claude
 -v
 $ROOT/home/.codex:/home/caged/.codex
---tmpfs
-/home/caged/.codex/app-server-control
---tmpfs
-/home/caged/.codex/app-server-daemon
---tmpfs
-/home/caged/.codex/ipc
---tmpfs
-/home/caged/.codex/packages/app-server-daemon
---tmpfs
-/home/caged/.codex/tmp/arg0
+--mount
+type=tmpfs,destination=/home/caged/.codex/app-server-control
+--mount
+type=tmpfs,destination=/home/caged/.codex/app-server-daemon
+--mount
+type=tmpfs,destination=/home/caged/.codex/ipc
+--mount
+type=tmpfs,destination=/home/caged/.codex/packages/app-server-daemon
+--mount
+type=tmpfs,destination=/home/caged/.codex/tmp/arg0
 -v
 $ROOT/home/.copilot:/home/caged/.copilot
 -v
-$ROOT/home/.gemini/oauth_creds.json:/home/caged/.gemini/oauth_creds.json
--v
-$ROOT/home/.gemini/settings.json:/home/caged/.gemini/settings.json
--v
-$ROOT/home/.gemini/settings.json:/home/caged/.gemini/current-settings.json
+$ROOT/home/.gemini:/home/caged/.gemini
 -v
 $ROOT/home/.config/gh:/home/caged/.config/gh
 -v
