@@ -50,13 +50,12 @@ func TestMountPathsWithAColonAreRefused(t *testing.T) {
 	}
 }
 
-// TestColonLinksInWholeAndStagedTreesAreRefused: in a Codex tree (mounted
-// whole) a link stays visible as itself, so only a target with a colon, which
-// is mounted where the link points, is refused; in a Pi tree (staged) the link
-// is mounted at its own place, so a colon in its name is refused. Either tree
-// is still mounted. A staged tree's masks never reach docker (configstage
-// mounts a symlink-free copy and drops them), so they need no check.
-func TestColonLinksInWholeAndStagedTreesAreRefused(t *testing.T) {
+// TestColonLinksInWholeTreesAreRefused: in a whole tree, a link stays visible
+// as itself, so only a target with a colon, which is mounted where the link
+// points, is refused. Pi's tree stays live here because its absolute link can
+// be followed in the container; a colon in the link's own name is part of the
+// whole-tree mount and does not need a separate docker mount.
+func TestColonLinksInWholeTreesAreRefused(t *testing.T) {
 	t.Parallel()
 
 	home := realHome(t)
@@ -68,10 +67,7 @@ func TestColonLinksInWholeAndStagedTreesAreRefused(t *testing.T) {
 	report := resolveConfigsWith(t, home, nil, policies{allow: []string{filepath.Join(home, "dotfiles")}})
 
 	const reason = `path contains ":", which docker cannot mount`
-	want := []string{
-		filepath.Join(home, "dotfiles", "a:b.md") + " (" + reason + ")",
-		filepath.Join(home, ".pi", "agent", "y:ro") + " (" + reason + ")",
-	}
+	want := []string{filepath.Join(home, "dotfiles", "a:b.md") + " (" + reason + ")"}
 	if got := refusedStrings(report.Refused); !slices.Equal(got, want) {
 		t.Errorf("refused = %q; want %q", got, want)
 	}
