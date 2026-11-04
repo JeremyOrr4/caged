@@ -16,7 +16,7 @@ Never push to `dev` or `main` directly, and never force-push.
 1. Branch from `dev` and open the PR against `dev`.
 2. Give the PR a [Conventional Commits](https://www.conventionalcommits.org/)
    title. With squash merges the title becomes the commit subject on `dev` and
-   drives automatic versioning and generated release notes:
+   appears in generated release notes:
 
    ```text
    feat(ports): publish container ports with -p
@@ -25,16 +25,17 @@ Never push to `dev` or `main` directly, and never force-push.
 
    Allowed types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`,
    `ci`, `chore`, `revert`. Add `!` before the colon or a `BREAKING CHANGE:`
-   footer for a breaking change. `feat`, `fix`, and `perf` trigger releases;
-   breaking changes trigger releases regardless of type.
+   footer for a breaking change. Every successful update to `main` triggers a
+   patch release, regardless of commit type. Conventional Commit titles keep
+   the generated release notes useful.
 3. Keep each PR to one change.
 4. Run `make check` first. CI runs the same checks; `ci-ok` is the required
    aggregate check and includes source-branch and commit-message policy.
 
 A PR into `main` must come from `dev` (a release) or from `hotfix/*` (a patch).
 Every non-merge commit in it must use a Conventional Commit subject. Once merged,
-`ci-ok` gates the automated release. Release notes are generated on GitHub;
-the `CHANGELOG.md` file is not updated for each release.
+`ci-ok` gates the automated patch release and Homebrew tap update. Release notes
+are generated on GitHub; the `CHANGELOG.md` file is not updated for each release.
 
 ## Hotfixes
 
@@ -42,8 +43,8 @@ the `CHANGELOG.md` file is not updated for each release.
    open a PR into `main`.
 2. After it merges and the automatic release completes, bring the fix back to
    `dev` with a normal PR (a cherry-pick on a `fix/*` branch), because `dev`
-   does not accept merge commits. Use a `chore:` PR title for a back-merge so
-   the already released fix does not trigger a duplicate version.
+   does not accept merge commits. Updates to `dev` do not publish releases; the
+   next successful update to `main` publishes one patch release.
 
 ## Local checks
 

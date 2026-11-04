@@ -45,8 +45,9 @@ commit_subject 'fix: initial release change'
 expect_version 0.1.0
 
 new_repo docs_only
+git -C "$repo" tag v0.1.0
 commit_subject 'docs: update examples'
-expect_version ''
+expect_version 0.1.1
 
 new_repo slow_feature
 git -C "$repo" tag v0.1.0
@@ -56,22 +57,22 @@ expect_version 0.1.1
 new_repo slow_breaking_subject
 git -C "$repo" tag v0.1.0
 commit_subject 'fix!: change behavior'
-expect_version 0.2.0
+expect_version 0.1.1
 
 new_repo slow_breaking_footer
 git -C "$repo" tag v0.1.0
 commit_subject 'fix: change behavior' 'BREAKING CHANGE: callers must adapt'
-expect_version 0.2.0
+expect_version 0.1.1
 
 new_repo breaking_footer_on_docs
 git -C "$repo" tag v0.1.0
 commit_subject 'docs: document a breaking change' 'BREAKING CHANGE: callers must adapt'
-expect_version 0.2.0
+expect_version 0.1.1
 
 new_repo stable_minor
 git -C "$repo" tag v1.2.3
 commit_subject 'feat: add a capability'
-expect_version 1.3.0
+expect_version 1.2.4
 
 new_repo stable_patch
 git -C "$repo" tag v1.2.3
@@ -81,7 +82,7 @@ expect_version 1.2.4
 new_repo stable_major
 git -C "$repo" tag v1.2.3
 commit_subject 'feat!: change behavior'
-expect_version 2.0.0
+expect_version 1.2.4
 
 new_repo ignores_non_semver_tags
 git -C "$repo" tag v9.9.9-rc.1

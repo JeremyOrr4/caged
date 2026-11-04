@@ -160,7 +160,7 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [ -z "$version" ]; then
-            echo "No release-worthy commits since the latest stable tag."
+            echo "No commits since the latest stable tag."
             exit 0
           fi
           echo "Next stable version: $version"
