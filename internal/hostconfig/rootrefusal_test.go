@@ -44,10 +44,12 @@ func TestStowLinkedPiRootIsRefusedLoudlyWithTheEntryToAllow(t *testing.T) {
 // and never carries an entry caged would offer to add.
 func TestLinkInsideAMountedTreeIsNeverOfferedForLinksAllow(t *testing.T) {
 	t.Parallel()
-	home, _ := testHome(t, nil, nil)
+	home, resolved := testHome(t, nil, nil)
 	writeFiles(t, home, ".claude/settings.json", "Documents/private.txt")
 	symlink(t, home, ".claude/planted", "../Documents")
-	link := filepath.Join(home, ".claude", "planted")
+	// Whole-tree traversal reports paths under the resolved root; on macOS
+	// this differs from the /var spelling returned by t.TempDir().
+	link := filepath.Join(resolved, ".claude", "planted")
 
 	refusal := mustRefuse(t, resolveConfigs(t, home, nil), link)
 	if refusal.Allow != "" || refusal.Warn || refusal.Agent != "" {
