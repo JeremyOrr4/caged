@@ -8,7 +8,7 @@ PASS  docker     $ROOT/bin/docker
 PASS  daemon     Docker Desktop, engine 27.0.0, linux/amd64
 PASS  image      caged-runtime:latest is current (runtime $RUNTIME_HASH12, built by caged test)
 PASS  config     ~/.config/caged/config.yaml (links.allow: 0; starter file created just now)
-WARN  links      $ROOT/home/.claude/CLAUDE.md (symlink target ~/dotfiles/claude/CLAUDE.md is not under links.allow); add "- path: ~/dotfiles/claude" under links.allow in ~/.config/caged/config.yaml; $ROOT/home/.config/pi (symlink target $ROOT/outside/pi is not under links.allow); add "- path: $ROOT/outside/pi" under links.allow in ~/.config/caged/config.yaml
+WARN  links      $ROOT/home/.claude/CLAUDE.md (symlink target ~/dotfiles/claude/CLAUDE.md is not under links.allow); add "- path: ~/dotfiles/claude" under links.allow in ~/.config/caged/config.yaml; pi config ~/.config/pi is NOT mounted (symlink target $ROOT/outside/pi is not under links.allow), so pi runs without it and anything pi changes there is lost when it exits. Fix: add "- path: $ROOT/outside/pi" under links.allow in ~/.config/caged/config.yaml, or answer y when caged asks
 PASS  ext-image  not used
 PASS  arch       image linux/amd64 matches the Docker VM (amd64)
 PASS  project    $ROOT/work/project can be mounted

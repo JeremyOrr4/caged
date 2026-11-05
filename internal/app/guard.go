@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -52,6 +51,10 @@ type GuardDeps struct {
 	Out       io.Writer // warnings, the change report and the question
 	// Interactive is true when In is a terminal, so someone can answer.
 	Interactive bool
+	// Prompter asks the approval question. It is shared with the other
+	// questions of the command; nil means one made from In, Out and
+	// Interactive.
+	Prompter *Prompter
 }
 
 // ConfigGuard prepares the config file for a command: it creates the starter
@@ -61,7 +64,12 @@ type GuardDeps struct {
 type ConfigGuard struct{ deps GuardDeps }
 
 // NewConfigGuard returns a ConfigGuard.
-func NewConfigGuard(deps GuardDeps) *ConfigGuard { return &ConfigGuard{deps: deps} }
+func NewConfigGuard(deps GuardDeps) *ConfigGuard {
+	if deps.Prompter == nil {
+		deps.Prompter = NewPrompter(deps.In, deps.Out, deps.Interactive)
+	}
+	return &ConfigGuard{deps: deps}
+}
 
 // prepare readies the config file for a command that acts on it: it creates
 // the file when opts.Create is set, then compares it with the last approved
@@ -223,15 +231,7 @@ func (g *ConfigGuard) report(change *configChange, pending bool) {
 // confirm asks whether to use the changed file. Anything but y or yes, or no
 // input at all, means no.
 func (g *ConfigGuard) confirm() bool {
-	_, _ = fmt.Fprint(g.deps.Out, "Use this config? [y/N] ") // best effort: an unseen question still needs a typed yes
-	// A read error ends the answer: what was typed before it counts ("y" then
-	// Ctrl-D is a yes), and no input at all is a no.
-	line, _ := bufio.NewReader(g.deps.In).ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true
-	}
-	return false
+	return g.deps.Prompter.Confirm("Use this config?")
 }
 
 func plural(n int, word string) string {

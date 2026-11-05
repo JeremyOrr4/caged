@@ -3,25 +3,27 @@ package userconfig
 import (
 	"io/fs"
 	"sync"
+	"time"
 )
 
 // fakeFS is an in-memory filesystem: a map of path to content.
 type fakeFS struct {
-	mu        sync.Mutex
-	files     map[string]string
-	err       error // returned for every read when set
-	reads     int
-	read      []string
-	dirs      []string
-	mkdirErr  error                  // returned by MkdirAllPrivate when set
-	createErr error                  // returned by CreateFile when set
-	raceLost  bool                   // CreateFile finds the file another process just created
-	creates   int                    // CreateFile calls
-	writeErr  error                  // returned by ReplaceFile when set
-	modes     map[string]fs.FileMode // the permissions ReplaceFile was asked for
-	noHome    bool                   // /home/me does not exist
-	links     map[string]string      // what EvalSymlinks resolves a listed path to
-	evalErr   error                  // returned by EvalSymlinks for every path when set
+	mu         sync.Mutex
+	files      map[string]string
+	err        error // returned for every read when set
+	reads      int
+	read       []string
+	dirs       []string
+	mkdirErr   error                  // returned by MkdirAllPrivate when set
+	createErr  error                  // returned by CreateFile when set
+	raceLost   bool                   // CreateFile finds the file another process just created
+	creates    int                    // CreateFile calls
+	writeErr   error                  // returned by ReplaceFile when set
+	modes      map[string]fs.FileMode // the permissions ReplaceFile was asked for
+	noHome     bool                   // /home/me does not exist
+	links      map[string]string      // what EvalSymlinks resolves a listed path to
+	evalErr    error                  // returned by EvalSymlinks for every path when set
+	lstatLinks map[string]bool        // paths Lstat reports as symlinks
 }
 
 func (f *fakeFS) MkdirAllPrivate(dir string) error {
@@ -111,3 +113,30 @@ func (f *fakeFS) EvalSymlinks(path string) (string, error) {
 	}
 	return path, nil
 }
+
+// Lstat describes a fake file as a regular file with mode 0600, or as a
+// symlink when it is listed in lstatLinks.
+func (f *fakeFS) Lstat(name string) (fs.FileInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lstatLinks[name] {
+		return fakeInfo{name: name, mode: fs.ModeSymlink | 0o777}, nil
+	}
+	if _, ok := f.files[name]; ok {
+		return fakeInfo{name: name, mode: 0o600}, nil
+	}
+	return nil, &fs.PathError{Op: "lstat", Path: name, Err: fs.ErrNotExist}
+}
+
+// fakeInfo is the fs.FileInfo of fakeFS.Lstat.
+type fakeInfo struct {
+	name string
+	mode fs.FileMode
+}
+
+func (i fakeInfo) Name() string      { return i.name }
+func (fakeInfo) Size() int64         { return 0 }
+func (i fakeInfo) Mode() fs.FileMode { return i.mode }
+func (fakeInfo) ModTime() time.Time  { return time.Time{} }
+func (i fakeInfo) IsDir() bool       { return i.mode.IsDir() }
+func (fakeInfo) Sys() any            { return nil }

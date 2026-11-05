@@ -7,7 +7,20 @@ version is 0.x, flags and output can still change.
 
 ## [Unreleased]
 
+### Fixed
+
+- A config folder that is itself a symlink outside `links.allow` (a Stow-linked
+  `~/.pi`) is no longer left out silently: every run of that agent and
+  `caged doctor` say the agent runs without it and loses its changes, and how
+  to fix it. Before, this showed only with `--verbose`, so Pi seemed to save
+  its config while nothing reached the dotfiles.
+
 ### Added
+
+- From a terminal, caged offers to add the missing `links.allow` entry for such
+  a folder (`[y/N]`). It edits `config.yaml` in place, keeping comments, only
+  when the file is unchanged since review, and records it as approved.
+- A run where Pi's config has to come from a staged copy says so.
 
 - The first command that needs it (run, build, doctor, list) creates
   `~/.config/caged/config.yaml` (or `$XDG_CONFIG_HOME/caged/`) with commented

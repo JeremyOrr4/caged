@@ -34,13 +34,15 @@ func main() {
 func run(ctx context.Context, version string, args []string, stdio system.Stdio, platform system.Platform, agents *agent.Registry) int {
 	fsys, env := system.FS{}, system.Env{}
 	store := userconfig.NewStore(fsys, env)
+	approvals := userconfig.NewApprovals(fsys, env, store)
+	prompter := app.NewPrompter(stdio.In, stdio.Err, system.IsTerminal(stdio.In)) // one input buffer for every question
 	guard := app.NewConfigGuard(app.GuardDeps{
-		Init: store, Content: store, Approvals: userconfig.NewApprovals(fsys, env, store),
-		In: stdio.In, Out: stdio.Err, Interactive: system.IsTerminal(stdio.In),
+		Init: store, Content: store, Approvals: approvals,
+		In: stdio.In, Out: stdio.Err, Interactive: prompter.Interactive(), Prompter: prompter,
 	})
 	configs := hostconfig.NewResolver(hostconfig.Deps{FS: fsys, Env: env, Agents: agents.All(), Shared: hostconfig.DefaultSharedFiles(), Policies: store, ConfigDirs: store, FoldCase: platform.FoldsCase()})
 	projects := project.NewResolver(fsys, store, platform.FoldsCase())
-	planner := app.NewPlanner(env, projects, configs)
+	planner := app.NewPlanner(env, projects, configs).WithLinkPrompt(app.LinkPrompt{Prompter: prompter, Allower: store, Approvals: approvals})
 	client := docker.NewClient(docker.Deps{Exec: system.Executor{}, FS: fsys, Stager: configstage.New(fsys), Platform: platform, Stdio: stdio})
 	ensurer := app.NewImageEnsurer(client, version)
 	services := cli.Services{

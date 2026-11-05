@@ -43,6 +43,18 @@ type Refusal struct {
 	// Warn marks a refusal the user must act on, such as a whole config
 	// folder left out: it is shown on every run, not only with --verbose.
 	Warn bool
+	// Agent owns the refused config root (SharedOwner for shared files and
+	// caged's own folder). It is set only on refusals of a whole config root
+	// reached through a symlink, the ones that leave an agent without its
+	// config.
+	Agent string
+	// Allow is the host path that, added to links.allow, would mount the
+	// refused root, and AllowReadOnly says it should be added read_only. It
+	// is set only for a config root (never for a link inside a mounted tree,
+	// which an agent could plant) whose target is merely not allowed, never
+	// denied.
+	Allow         string
+	AllowReadOnly bool
 }
 
 // String formats the refusal as "path (reason)", followed by "; hint" when
