@@ -142,7 +142,10 @@ func TestSymlinkedConfigDirNeedsLinksAllow(t *testing.T) {
 	// The hint names the target's folder: links.allow cannot name the target
 	// itself, a form of the denied ~/.config/caged (bugs.md B-HC-3).
 	refusal, ok := refusalAt(report, dir)
-	want := plan.Refusal{Path: dir, Reason: "symlink target ~/dotfiles/caged is not under links.allow", Hint: `add "- path: ~/dotfiles" under links.allow in ~/.config/caged/config.yaml`}
+	want := plan.Refusal{
+		Path: dir, Reason: "symlink target ~/dotfiles/caged is not under links.allow", Hint: `add "- path: ~/dotfiles" under links.allow in ~/.config/caged/config.yaml`,
+		Warn: true, Agent: plan.SharedOwner, Allow: filepath.Join(home, "dotfiles"),
+	}
 	if !ok || refusal != want {
 		t.Fatalf("refusal = %+v, %v; want %+v", refusal, ok, want)
 	}

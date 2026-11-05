@@ -17,6 +17,11 @@ func (s *Store) LinkPolicy(home string) (*pathpolicy.Policy, error) {
 	if err != nil {
 		return nil, err
 	}
+	return s.linkPolicy(cfg, home)
+}
+
+// linkPolicy is LinkPolicy for cfg.
+func (s *Store) linkPolicy(cfg config, home string) (*pathpolicy.Policy, error) {
 	dir, err := s.Dir()
 	if err != nil {
 		return nil, err

@@ -7,6 +7,7 @@ fake docker run output
 === stderr
 caged: created starter config ~/.config/caged/config.yaml (every example is commented out)
 WARNING: allowlisted agent credentials are available inside the container.
+WARNING: pi config ~/.config/pi is NOT mounted (symlink target $ROOT/outside/pi is not under links.allow), so pi runs without it and anything pi changes there is lost when it exits. Fix: add "- path: $ROOT/outside/pi" under links.allow in ~/.config/caged/config.yaml, or answer y when caged asks
 === docker invocations
 info
 --format

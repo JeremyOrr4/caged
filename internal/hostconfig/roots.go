@@ -106,7 +106,7 @@ func (r *resolution) cagedDir(dir, state string) {
 	switch {
 	case r.linked(dir, resolved):
 		if decision.Verdict != pathpolicy.Allowed {
-			r.refuseLink(dir, resolved, decision)
+			r.refuseRootLink(o, dir, resolved, decision)
 			return
 		}
 		o.policy, o.writable, via = own, !decision.Root.ReadOnly, dir
@@ -172,7 +172,7 @@ func (r *resolution) checkRoot(hostPath, resolved string, o *owner) (string, boo
 	}
 	decision := o.policy.Check(resolved)
 	if decision.Verdict != pathpolicy.Allowed {
-		r.refuseLink(hostPath, resolved, decision)
+		r.refuseRootLink(*o, hostPath, resolved, decision)
 		return "", false
 	}
 	o.writable = o.writable && !decision.Root.ReadOnly

@@ -130,7 +130,19 @@ Agent config directories such as `~/.claude` can hold symlinks, for example when
 - A root that contains your home directory (`/` or `~`) is refused as too broad.
 - Targets are mounted read-write, so an agent can edit your dotfiles through the link. Set `read_only: true` on a root to mount through it read-only. That protects the target, not the link: the link sits in the writable config folder, so an agent can still delete it or replace it with a file of its own.
 
-A refused link is not mounted, and the message says what to add. See them with `caged --verbose`, or with the `links` row of `caged doctor`:
+When a whole config folder is itself a link (Stow often makes `~/.pi` one link into the dotfiles) and its target is not under `links.allow`, the agent would run with none of its config, and everything it changed there would be lost when it exits. Caged says so on every run of that agent, and so does the `links` row of `caged doctor`:
+
+```text
+WARNING: pi config ~/.pi is NOT mounted (symlink target ~/dotfiles/pi/.pi is not under links.allow), so pi runs without it and anything pi changes there is lost when it exits. Fix: add "- path: ~/dotfiles/pi/.pi" under links.allow in ~/.config/caged/config.yaml, or answer y when caged asks
+```
+
+From a terminal, caged also asks `Add ~/dotfiles/pi/.pi to links.allow (read/write) so it is mounted? [y/N]`. On `y` it adds the entry to `config.yaml`, keeping your comments, records the file as approved, and mounts the folder for this run. It asks only about the folders of the agent you run and the shared ones (`.gitconfig`, offered read-only, and caged's own folder), never about a link inside a mounted folder, which an agent could have planted, and never with `--trust-config` or without a terminal. A `no` is not remembered, so the next run asks again. Caged does not edit a `config.yaml` that is itself a symlink, or one that changed after it was reviewed; it prints the line to add instead.
+
+When Pi has to run from a copy (a link in its folder cannot be followed inside the container), every run says so: changes are copied back when Pi exits, and lost if caged is killed.
+
+Dotfiles that ignore runtime files in git (`auth.json`, `sessions/`, `npm/` and so on) still get them on disk; only `git status` leaves them out.
+
+Other refused links are not mounted, and the message says what to add. See them with `caged --verbose`, or with the `links` row of `caged doctor`:
 
 ```text
 config: refused ~/.claude/CLAUDE.md (symlink target ~/dotfiles/claude/CLAUDE.md is not under links.allow); add "- path: ~/dotfiles/claude" under links.allow in ~/.config/caged/config.yaml

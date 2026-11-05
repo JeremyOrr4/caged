@@ -28,6 +28,10 @@ type FileSystem interface {
 	// CreateFile creates name only if nothing is there, all at once; it fails
 	// with an error wrapping fs.ErrExist otherwise.
 	CreateFile(name string, data []byte, perm fs.FileMode) error
+	// Lstat describes name without following a final symlink.
+	Lstat(name string) (fs.FileInfo, error)
+	// ReplaceFile atomically replaces name with data.
+	ReplaceFile(name string, data []byte, perm fs.FileMode) error
 }
 
 // Env supplies the settings that decide where the file lives. system.Env

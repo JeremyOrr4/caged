@@ -174,16 +174,30 @@ func (p *Policy) Remedy(d Decision, target string, isDir bool) string {
 		}
 		return fmt.Sprintf("%s is denied by links.deny in %s", p.tilde(d.Root.Path), p.cfg.Source)
 	case NotAllowed:
-		suggest := filepath.Clean(target)
-		if _, denied := p.denyHolding(suggest); !isDir || denied {
-			if dir := filepath.Dir(suggest); !p.tooBroad(dir) {
-				suggest = dir
-			}
-		}
+		suggest, _ := p.Suggest(d, target, isDir)
 		return fmt.Sprintf("add \"- path: %s\" under %s in %s", p.tilde(suggest), p.cfg.Field, p.cfg.Source)
 	default:
 		return ""
 	}
+}
+
+// Suggest returns the allow root Remedy names for a NotAllowed decision about
+// target: target itself for a directory, else its directory unless that would
+// be too broad. ok is false for any other verdict, and when the suggestion
+// could not be added as an allow root (New would refuse it: too broad, or
+// inside a deny root), so a caller that offers to add it must not.
+func (p *Policy) Suggest(d Decision, target string, isDir bool) (path string, ok bool) {
+	if d.Verdict != NotAllowed {
+		return "", false
+	}
+	suggest := filepath.Clean(target)
+	if _, denied := p.denyHolding(suggest); !isDir || denied {
+		if dir := filepath.Dir(suggest); !p.tooBroad(dir) {
+			suggest = dir
+		}
+	}
+	_, denied := p.denyHolding(suggest)
+	return suggest, filepath.IsAbs(suggest) && !denied && !p.tooBroad(suggest)
 }
 
 // AllowPaths returns every form of every allow root.

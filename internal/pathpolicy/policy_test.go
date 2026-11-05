@@ -254,6 +254,50 @@ func TestRemedyNeverSuggestsADeniedRoot(t *testing.T) {
 	}
 }
 
+// TestSuggestOffersOnlyAddableRoots: Suggest names the path Remedy names, and
+// reports false when New would refuse it as an allow root or when the verdict
+// is not NotAllowed, so caged never offers to write an entry that breaks the
+// config.
+func TestSuggestOffersOnlyAddableRoots(t *testing.T) {
+	t.Parallel()
+	deny := []Root{{Path: "/h/.config/caged", Forms: []string{"/h/dotfiles/caged", "/h/caged"}, Builtin: true}, {Path: "/h/.ssh", Builtin: true}}
+	policy, err := New(testConfig([]Root{{Path: "/h/dot"}}, deny))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := policy.Without("/h/.config/caged")
+	tests := []struct {
+		name     string
+		decision Decision
+		target   string
+		isDir    bool
+		want     string
+		ok       bool
+	}{
+		{"directory", Decision{Verdict: NotAllowed}, "/h/dotfiles/pi/.pi", true, "/h/dotfiles/pi/.pi", true},
+		{"file suggests its directory", Decision{Verdict: NotAllowed}, "/h/dotfiles/git/.gitconfig", false, "/h/dotfiles/git", true},
+		{"file in home is itself", Decision{Verdict: NotAllowed}, "/h/a.json", false, "/h/a.json", true},
+		{"denied form suggests its parent", set.Check("/h/dotfiles/caged"), "/h/dotfiles/caged", true, "/h/dotfiles", true},
+		{"denied form with a too-broad parent", set.Check("/h/caged"), "/h/caged", true, "/h/caged", false},
+		{"denied", policy.Check("/h/.ssh/x"), "/h/.ssh/x", true, "", false},
+		{"allowed", policy.Check("/h/dot/x"), "/h/dot/x", true, "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := policy.Suggest(tc.decision, tc.target, tc.isDir)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("Suggest = %q, %v; want %q, %v", got, ok, tc.want, tc.ok)
+			}
+			if ok {
+				if _, err := New(testConfig([]Root{{Path: got}}, deny)); err != nil {
+					t.Fatalf("New refused the suggested root: %v", err)
+				}
+			}
+		})
+	}
+}
+
 // TestBuiltinDenyAddsCagedsOwnFolders pins WB-T1 (bugs.md Q-F03, Q-UC-3):
 // caged's config and approval-state folders are denied wherever the
 // environment put them, after the fixed entries, so a path the fixed list

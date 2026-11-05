@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/JeremyOrr4/caged/internal/agent"
+	"github.com/JeremyOrr4/caged/internal/pathpolicy"
 	"github.com/JeremyOrr4/caged/internal/plan"
 )
 
@@ -31,6 +32,7 @@ type Planner struct {
 	env     Env
 	project ProjectResolver
 	configs ConfigResolver
+	links   *LinkPrompt // nil: refused config roots are only reported
 }
 
 // NewPlanner returns a Planner that reads env and resolves the project and
@@ -132,7 +134,12 @@ func (p *Planner) configMounts(request Request, home *homeLookup, rep *Reporter)
 	if err != nil {
 		return nil, err
 	}
-	logConfigReport(rep, report)
+	if p.offerLinks(request, report, homeDir, rep) {
+		if report, err = p.configs.Resolve(homeDir); err != nil {
+			return nil, err
+		}
+	}
+	logConfigReport(rep, report, request, homeDir)
 	return report.Mounts, nil
 }
 
@@ -144,21 +151,36 @@ func envSet(env Env) func(name string) bool {
 	}
 }
 
-func logConfigReport(rep *Reporter, report plan.ConfigReport) {
+// logConfigReport reports the config mounts. A refused config root of this
+// run (concerns) and any other refusal marked Warn are shown on every run,
+// as is a config of the selected agent that runs from a staged copy; the
+// rest only with --verbose.
+func logConfigReport(rep *Reporter, report plan.ConfigReport, request Request, home string) {
+	staged := make(map[string]bool)
 	for _, mount := range report.Mounts {
 		if mount.Link != "" {
 			rep.detail("config: pass %s -> %s (via link %s)", mount.HostPath, mount.DestPath, mount.Link)
 		} else {
 			rep.detail("config: pass %s -> %s", mount.HostPath, mount.DestPath)
 		}
+		if mount.Staged && request.Agent != nil && mount.Agent == request.Agent.Name && !staged[mount.Root] {
+			staged[mount.Root] = true
+			rep.Notice("NOTE: %s config %s runs from a copy, because a link in it cannot be followed inside the container; changes are copied back when %s exits, and lost if caged is killed.",
+				mount.Agent, pathpolicy.Tilde(home, mount.Root), mount.Agent)
+		}
 	}
 	for _, path := range report.Missing {
 		rep.detail("config: missing %s", path)
 	}
 	for _, refusal := range report.Refused {
-		if refusal.Warn {
+		switch {
+		case refusal.Agent != "" && concerns(request, refusal):
+			rep.Notice("WARNING: %s", rootWarning(refusal, home))
+		case refusal.Agent != "":
+			rep.detail("config: refused %s", refusal)
+		case refusal.Warn:
 			rep.Notice("WARNING: config: refused %s", refusal)
-		} else {
+		default:
 			rep.detail("config: refused %s", refusal)
 		}
 	}

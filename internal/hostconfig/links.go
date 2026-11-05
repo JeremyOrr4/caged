@@ -73,6 +73,28 @@ func (r *resolution) linkTarget(o *owner, treeRoot, link string) (target string,
 // refuseLink records a symlink whose target the policy refused, with the hint
 // that tells the user how to allow it.
 func (r *resolution) refuseLink(link, target string, decision pathpolicy.Decision) {
+	refusal, _ := r.linkRefusal(link, target, decision)
+	r.report.Refused = appendUnique(r.report.Refused, refusal)
+}
+
+// refuseRootLink records o's config root, reached through a symlink whose
+// target the policy refused. The whole config is left out, so the refusal is
+// shown on every run, and names the agent. When the target is only not
+// allowed, it also carries the links.allow entry that would mount it, which
+// caged may offer to add: the roots are fixed names in the home directory,
+// which no container can write, so an agent cannot plant one.
+func (r *resolution) refuseRootLink(o owner, root, target string, decision pathpolicy.Decision) {
+	refusal, isDir := r.linkRefusal(root, target, decision)
+	refusal.Warn, refusal.Agent = true, o.agent
+	if allow, ok := r.policy.Suggest(decision, target, isDir); ok {
+		refusal.Allow, refusal.AllowReadOnly = allow, !o.writable
+	}
+	r.report.Refused = appendUnique(r.report.Refused, refusal)
+}
+
+// linkRefusal is the refusal of link, whose target the policy refused, and
+// whether that target is a directory.
+func (r *resolution) linkRefusal(link, target string, decision pathpolicy.Decision) (plan.Refusal, bool) {
 	isDir := false
 	if info, err := r.fs.Stat(target); err == nil {
 		isDir = info.IsDir()
@@ -82,5 +104,5 @@ func (r *resolution) refuseLink(link, target string, decision pathpolicy.Decisio
 	if decision.Verdict == pathpolicy.Denied {
 		reason = "symlink target " + shown + " is denied"
 	}
-	r.report.Refused = appendUnique(r.report.Refused, plan.Refusal{Path: link, Reason: reason, Hint: r.policy.Remedy(decision, target, isDir)})
+	return plan.Refusal{Path: link, Reason: reason, Hint: r.policy.Remedy(decision, target, isDir)}, isDir
 }

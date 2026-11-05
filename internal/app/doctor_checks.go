@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/JeremyOrr4/caged/internal/images"
+	"github.com/JeremyOrr4/caged/internal/pathpolicy"
 )
 
 // check is one row of `caged doctor`. A check whose needs failed, were
@@ -135,7 +136,11 @@ func (d *Doctor) checkLinks(_ context.Context, f *facts) Result {
 	}
 	var refused []string
 	for _, refusal := range report.Refused {
-		if refusal.Hint != "" {
+		switch {
+		case refusal.Agent != "":
+			// A whole config left out: say what that costs the agent.
+			refused = append(refused, rootWarning(refusal, home))
+		case refusal.Hint != "":
 			refused = append(refused, refusal.String())
 		}
 	}
@@ -143,15 +148,23 @@ func (d *Doctor) checkLinks(_ context.Context, f *facts) Result {
 		return Result{Status: StatusWarn, Detail: strings.Join(refused, "; ")}
 	}
 	followed := 0
+	var staged []string
 	for _, mount := range report.Mounts {
 		if mount.Link != "" {
 			followed++
 		}
+		if mount.Staged && !slices.Contains(staged, mount.Root) {
+			staged = append(staged, mount.Root)
+		}
 	}
-	if followed == 0 {
-		return Result{Status: StatusPass, Detail: "no symlinked config"}
+	detail := "no symlinked config"
+	if followed > 0 {
+		detail = fmt.Sprintf("%d symlinked config mounts allowed", followed)
 	}
-	return Result{Status: StatusPass, Detail: fmt.Sprintf("%d symlinked config mounts allowed", followed)}
+	for _, root := range staged {
+		detail += fmt.Sprintf("; %s runs from a copy saved back when the agent exits (a link in it cannot be followed inside the container)", pathpolicy.Tilde(home, root))
+	}
+	return Result{Status: StatusPass, Detail: detail}
 }
 
 func (d *Doctor) checkExtensionImage(ctx context.Context, f *facts) Result {
